@@ -1,0 +1,14 @@
+[package]
+name = "lmfit"
+version = "0.1.0"
+edition = "2024"
+description = "Arbitrary curve fitting, modelled on Python's lmfit"
+license = "MIT"
+
+[workspace]
+members = ["derive"]
+
+[dependencies]
+levenberg-marquardt = "0.15.0"
+nalgebra = "0.34"
+lmfit_derive = { version = "0.1.0", path = "derive" }
