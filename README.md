@@ -1,0 +1,188 @@
+# lmfit
+
+Arbitrary curve fitting in Rust, modelled on Python's [lmfit](https://lmfit.github.io/lmfit-py/).
+
+A model is a struct whose fields are its parameters, and the arithmetic is the
+one method you write. Fitted values are the model's fields, not string lookups.
+
+```rust
+use lmfit::{Curve, Model};
+
+#[derive(Model)]
+struct Gaussian {
+    #[param(value = 5.0)]
+    amp: f64,
+    #[param(value = 5.0)]
+    cen: f64,
+    #[param(value = 2.0, min = 0.0)]
+    wid: f64,
+}
+
+impl Curve for Gaussian {
+    fn eval(&self, x: f64) -> f64 {
+        self.amp * (-(x - self.cen).powi(2) / self.wid).exp()
+    }
+}
+
+fn main() -> Result<(), lmfit::Error> {
+    let x: Vec<f64> = (0..101).map(|i| i as f64 / 10.0).collect();
+    let y: Vec<f64> = x
+        .iter()
+        .map(|&t| 5.0 * (-(t - 5.0f64).powi(2) / 2.0).exp())
+        .collect();
+
+    // The starting point is the struct's field values.
+    let result = Gaussian { amp: 4.0, cen: 4.0, wid: 1.5 }.fit(&y, &x)?;
+
+    assert!((result.model.amp - 5.0).abs() < 1e-6);
+    assert!((result.model.cen - 5.0).abs() < 1e-6);
+    assert!((result.model.wid - 2.0).abs() < 1e-6);
+
+    println!("{}", result.fit_report());
+    Ok(())
+}
+```
+
+## Models combine with `+`
+
+Each side's parameters are prefix-qualified, so they stay distinct. Any depth of
+nesting works, and the components stay separate — you can evaluate one half of a
+composite without the other.
+
+```rust
+use lmfit::models::{Constant, Gaussian};
+use lmfit::Curve;
+
+fn main() -> Result<(), lmfit::Error> {
+    let x: Vec<f64> = (0..101).map(|i| i as f64 / 10.0).collect();
+    let y: Vec<f64> = x
+        .iter()
+        .map(|&t| {
+            5.0 / (std::f64::consts::TAU.sqrt() * 2.0)
+                * (-(t - 5.0f64).powi(2) / 8.0).exp()
+                + 0.75
+        })
+        .collect();
+
+    let model = Gaussian { amplitude: 4.0, center: 4.0, sigma: 1.5 } + Constant { c: 0.0 };
+    let result = model.fit(&y, &x)?;
+
+    // The composite keeps its two halves: `.a` is the Gaussian, `.b` the constant.
+    println!("area       = {}", result.model.a.amplitude);
+    println!("background = {}", result.model.b.c);
+
+    // Parameters are reported under their prefixed names.
+    assert!(result.params.get("gaussian_amplitude").is_some());
+    assert!(result.params.get("constant_c").is_some());
+    Ok(())
+}
+```
+
+## Bounds and fixed parameters
+
+`#[param(min = .., max = ..)]` constrains a parameter and `vary = false` pins it.
+
+```rust
+use lmfit::Model;
+
+#[derive(Model)]
+struct Bounded {
+    #[param(value = 5.0, min = 0.0, max = 10.0)]
+    amplitude: f64,
+    #[param(value = 1.0, vary = false)]
+    offset: f64,
+}
+```
+
+Bounds are enforced *by construction*: the fit runs in an unbounded internal
+space and the transform cannot produce a value outside the range, so nothing is
+clamped or rejected during iteration. This is lmfit's own scheme, transcribed —
+including its `to_internal`/`from_internal` formulas and its snap of near-zero
+internal values onto the bound.
+
+## Results
+
+`ModelResult<M>` carries the fitted model, the fitted parameters with their
+bounds and starting points, the curve, the residuals, and the usual statistics.
+
+| Field | Meaning |
+| --- | --- |
+| `model` | the fitted model — its fields are the parameter values |
+| `params` | the fitted `Parameter`s, with bounds and starting values |
+| `best_fit` | the model evaluated at `x` |
+| `residual` | `y - best_fit` |
+| `chisqr`, `redchi` | sum of squared residuals, and it divided by `nfree` |
+| `aic`, `bic` | Akaike and Bayesian information criteria |
+| `ndata`, `nvarys`, `nfree` | data points, varied parameters, degrees of freedom |
+| `nfev` | residual evaluations performed |
+| `success`, `message` | whether the solver converged, and how it ended |
+
+```rust
+use lmfit::{Curve, models::Gaussian};
+
+fn main() -> Result<(), lmfit::Error> {
+    let x: Vec<f64> = (0..101).map(|i| i as f64 / 10.0).collect();
+    let y: Vec<f64> = x
+        .iter()
+        .map(|&t| 5.0 * (-(t - 5.0f64).powi(2) / 2.0).exp())
+        .collect();
+    let result = Gaussian::default().fit(&y, &x)?;
+
+    // Fitted values are the model's fields.
+    println!("amplitude = {}", result.model.amplitude);
+    println!("chi-square = {}, reduced = {}", result.chisqr, result.redchi);
+    println!("converged: {} ({})", result.success, result.message);
+
+    println!("{}", result.fit_report());
+    Ok(())
+}
+```
+
+## Built-in models
+
+`lmfit::models` provides `Gaussian` and `Constant`. Note that `Gaussian`'s
+`amplitude` is the **area** under the curve, not the peak height — that is
+lmfit's convention and the opposite of the `amp * exp(..)` form most people
+write from memory.
+
+## Implementation
+
+The solver is [Levenberg-Marquardt](https://crates.io/crates/levenberg-marquardt),
+driven with scipy `leastsq`'s default tolerances and lmfit's function-evaluation
+budget, so a fit here and a fit in Python should take the same path. The
+Jacobian is differenced the way MINPACK's `fdjac2` does it, since a model is an
+arbitrary closure and there are no analytic derivatives to be had.
+
+The crate is layered so the pieces can be replaced independently: the derive
+macro only ever produces a parameter *layout*, the solver only ever consumes
+one, and neither knows about the other.
+
+| Module | Role |
+| --- | --- |
+| `traits` | `ModelParams` (layout) and `Curve` (arithmetic) — the seam |
+| `bounds` | lmfit's bounded-parameter transform |
+| `solver` | the LM adapter; the only module that knows the solver exists |
+| `numerics` | finite-difference Jacobian |
+| `composite` | `Sum<A, B>` and the `+` operator |
+| `result` | `ModelResult` and the fit statistics |
+| `report` | `fit_report()` formatting |
+| `models` | ready-made line shapes |
+
+## Status
+
+Not yet implemented, in rough order of how much they are missed:
+
+- `+/- stderr` and `[[Correlations]]` in the report — both need a covariance
+  matrix, which is not computed yet.
+- Parameter expressions (lmfit's `expr=`), and `guess()`-style heuristics for
+  picking starting values.
+- Solvers other than `leastsq`, and global or derivative-free methods.
+- Composite forms beyond `+`.
+
+## Minimum supported Rust version
+
+1.87, which is what `nalgebra` 0.34 requires. The crate uses edition 2024.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

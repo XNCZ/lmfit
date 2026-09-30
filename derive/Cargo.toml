@@ -2,8 +2,13 @@
 name = "lmfit_derive"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 description = "Derive macro for lmfit curve models"
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/XNCZ/lmfit"
+keywords = ["curve-fitting", "deriving", "macros", "optimization"]
+categories = ["development-tools"]
 
 [lib]
 proc-macro = true

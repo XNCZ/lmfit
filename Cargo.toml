@@ -2,8 +2,13 @@
 name = "lmfit"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.87"
 description = "Arbitrary curve fitting, modelled on Python's lmfit"
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/XNCZ/lmfit"
+keywords = ["curve-fitting", "leastsq", "levenberg-marquardt", "optimization", "fitting"]
+categories = ["science", "mathematics", "algorithms"]
 
 [workspace]
 members = ["derive"]
