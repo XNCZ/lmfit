@@ -1,13 +1,12 @@
 //! Code generation for `#[derive(Model)]`.
 //!
 //! Given a struct whose fields are all `f64` and all carry `#[param(...)]`,
-//! this emits four things:
+//! this emits three things:
 //!
 //! 1. `impl ModelParams` — the parameter layout the solver reads.
 //! 2. `impl Default` — built from each field's `value`, so `Gaussian::default()`
 //!    is the model at its starting guesses.
-//! 3. `impl Add<B>` — so `gaussian + constant` compiles.
-//! 4. Nothing else. Notably *not* `Curve`: the arithmetic is the user's to
+//! 3. Nothing else. Notably *not* `Curve`: the arithmetic is the user's to
 //!    write, and that split is what keeps this macro out of their way.
 //!
 //! Generated paths go through `::lmfit::`, which resolves both in a
@@ -29,7 +28,7 @@ struct Field {
     vary: Option<syn::Expr>,
 }
 
-pub fn expand(input: DeriveInput) -> Result<TokenStream> {
+pub fn codegen(input: DeriveInput) -> Result<TokenStream> {
     let name = &input.ident;
 
     if !input.generics.params.is_empty() {
@@ -55,7 +54,7 @@ pub fn expand(input: DeriveInput) -> Result<TokenStream> {
     let nparams = fields.len();
 
     // specs(): one entry per field, in declaration order — which is also the
-    // index order `get`, `set`, and `with_values` use.
+    // index order `get`, `set`, and `at_values` use.
     //
     // `value` reads the field's *current* value, not the `#[param(value = ..)]`
     // starting value: a spec describes where the model is now, and the fit
@@ -105,12 +104,10 @@ pub fn expand(input: DeriveInput) -> Result<TokenStream> {
         impl ::lmfit::ModelParams for #name {
             const MODEL_NAME: &'static str = #model_name;
 
+            const NPARAMS: usize = #nparams;
+
             fn specs(&self) -> ::std::vec::Vec<::lmfit::ParamSpec> {
                 ::std::vec![#(#spec_entries),*]
-            }
-
-            fn nparams(&self) -> usize {
-                #nparams
             }
 
             fn get(&self, index: usize) -> f64 {
@@ -137,7 +134,7 @@ pub fn expand(input: DeriveInput) -> Result<TokenStream> {
                 }
             }
 
-            fn with_values(&self, values: &[f64]) -> Self {
+            fn at_values(&self, values: &[f64]) -> Self {
                 ::std::assert!(
                     values.len() == #nparams,
                     "model `{}` expects {} parameter values, got {}",
@@ -156,21 +153,6 @@ pub fn expand(input: DeriveInput) -> Result<TokenStream> {
                 Self {
                     #(#default_fields)*
                 }
-            }
-        }
-
-        // The orphan rule forbids a single blanket `impl<A: Curve, B: Curve>
-        // Add<B> for A`, because `A` is a bare type parameter. Emitting the
-        // impl here works instead: `#name` is local to the crate this macro
-        // expands into, and `impl<T> ForeignTrait<T> for LocalType` is allowed.
-        //
-        // The cost is that a model already implementing `Add` cannot also
-        // derive `Model`.
-        impl<__B: ::lmfit::Curve> ::core::ops::Add<__B> for #name {
-            type Output = ::lmfit::Sum<#name, __B>;
-
-            fn add(self, rhs: __B) -> Self::Output {
-                ::lmfit::Sum::new(self, rhs)
             }
         }
     })

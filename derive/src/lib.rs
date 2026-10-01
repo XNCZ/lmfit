@@ -5,7 +5,7 @@
 //! rather than naming this one.
 
 mod attr;
-mod expand;
+mod codegen;
 
 use proc_macro::TokenStream;
 use syn::{DeriveInput, parse_macro_input};
@@ -40,21 +40,19 @@ use syn::{DeriveInput, parse_macro_input};
 /// * `#[param(value = <expr>)]` — required; the starting value.
 /// * `#[param(min = <expr>)]`, `#[param(max = <expr>)]` — bounds.
 /// * `#[param(vary = <bool>)]` — set `false` to pin the parameter.
-/// * `#[model(name = "...")]` on the struct — override the prefix used for
-///   this model's parameters in a composite.
+/// * `#[model(name = "...")]` on the struct — override the name this model
+///   reports under in a fit report.
 ///
 /// # What this generates
 ///
-/// `ModelParams` and `Default`, plus `Add`, so that `gaussian + constant`
-/// builds a composite. It does **not** generate `Curve`; the arithmetic is
-/// yours to write.
+/// `ModelParams` and `Default`. It does **not** generate `Curve`; the
+/// arithmetic is yours to write.
 ///
-/// Because `Default` is generated, a model must not also derive `Default`, and
-/// because `Add` is generated it must not already implement `Add`.
+/// Because `Default` is generated, a model must not also derive `Default`.
 #[proc_macro_derive(Model, attributes(param, model))]
 pub fn derive_model(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    expand::expand(input)
+    codegen::codegen(input)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

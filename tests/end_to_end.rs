@@ -62,9 +62,7 @@ impl ModelParams for Gaussian {
         ]
     }
 
-    fn nparams(&self) -> usize {
-        3
-    }
+    const NPARAMS: usize = 3;
 
     fn get(&self, index: usize) -> f64 {
         match index {
@@ -84,7 +82,7 @@ impl ModelParams for Gaussian {
         }
     }
 
-    fn with_values(&self, values: &[f64]) -> Self {
+    fn at_values(&self, values: &[f64]) -> Self {
         Self::new(values[0], values[1], values[2])
     }
 }
@@ -316,18 +314,16 @@ impl ModelParams for BoundedGaussian {
         specs[1].min = Some(self.cen_min);
         specs
     }
-    fn nparams(&self) -> usize {
-        self.inner.nparams()
-    }
+    const NPARAMS: usize = Gaussian::NPARAMS;
     fn get(&self, index: usize) -> f64 {
         self.inner.get(index)
     }
     fn set(&mut self, index: usize, value: f64) {
         self.inner.set(index, value);
     }
-    fn with_values(&self, values: &[f64]) -> Self {
+    fn at_values(&self, values: &[f64]) -> Self {
         Self {
-            inner: self.inner.with_values(values),
+            inner: self.inner.at_values(values),
             cen_min: self.cen_min,
         }
     }
@@ -378,18 +374,16 @@ impl ModelParams for FixedAmp {
         specs[0].vary = false;
         specs
     }
-    fn nparams(&self) -> usize {
-        self.inner.nparams()
-    }
+    const NPARAMS: usize = Gaussian::NPARAMS;
     fn get(&self, index: usize) -> f64 {
         self.inner.get(index)
     }
     fn set(&mut self, index: usize, value: f64) {
         self.inner.set(index, value);
     }
-    fn with_values(&self, values: &[f64]) -> Self {
+    fn at_values(&self, values: &[f64]) -> Self {
         Self {
-            inner: self.inner.with_values(values),
+            inner: self.inner.at_values(values),
         }
     }
 }

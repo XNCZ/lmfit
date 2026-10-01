@@ -23,18 +23,6 @@ impl Curve for Gaussian {
     }
 }
 
-#[derive(Model, Debug)]
-struct Constant {
-    #[param(value = 0.0)]
-    c: f64,
-}
-
-impl Curve for Constant {
-    fn eval(&self, _x: f64) -> f64 {
-        self.c
-    }
-}
-
 /// A model with a deliberately long parameter name, to exercise column widths.
 #[derive(Model, Debug)]
 struct Wide {
@@ -185,30 +173,15 @@ fn fixed_parameters_are_marked() {
     assert!(cen_line.contains("(init = 4)"), "{cen_line}");
 }
 
-/// A composite names its structure rather than showing the generic prefix.
+/// The `[[Model]]` line carries the model's name, so reports for different
+/// models are distinguishable at a glance.
 #[test]
-fn composites_describe_their_structure() {
-    let x: Vec<f64> = (0..101).map(|i| i as f64 / 10.0).collect();
-    let y: Vec<f64> = x
-        .iter()
-        .map(|&t| 5.0 * (-(t - 5.0f64).powi(2) / 2.0).exp() + 0.75)
-        .collect();
-
-    let model = Gaussian {
-        amp: 4.0,
-        cen: 4.0,
-        wid: 1.5,
-    } + Constant { c: 0.0 };
-
-    let report = model.fit(&y, &x).expect("fit ran").fit_report();
-
+fn model_line_carries_the_model_name() {
+    let report = fit_gaussian().fit_report();
     assert!(
-        report.contains("(gaussian + constant)"),
-        "composite description missing from\n{report}"
+        report.contains("[[Model]]\n    gaussian"),
+        "model name missing from\n{report}"
     );
-    // And parameter names carry their prefixes.
-    assert!(report.contains("gaussian_amp"));
-    assert!(report.contains("constant_c"));
 }
 
 /// Format a float the way the report does, for use in assertions.

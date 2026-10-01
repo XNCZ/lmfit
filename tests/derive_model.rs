@@ -47,9 +47,7 @@ impl ModelParams for HandGaussian {
         ]
     }
 
-    fn nparams(&self) -> usize {
-        3
-    }
+    const NPARAMS: usize = 3;
 
     fn get(&self, index: usize) -> f64 {
         match index {
@@ -69,7 +67,7 @@ impl ModelParams for HandGaussian {
         }
     }
 
-    fn with_values(&self, values: &[f64]) -> Self {
+    fn at_values(&self, values: &[f64]) -> Self {
         Self {
             amp: values[0],
             cen: values[1],
@@ -172,7 +170,7 @@ fn specs_carry_names_bounds_and_vary_flags() {
     let specs = m.specs();
 
     assert_eq!(specs.len(), 3);
-    assert_eq!(m.nparams(), 3);
+    assert_eq!(DerivedGaussian::NPARAMS, 3);
 
     assert_eq!(specs[0].name, "amp");
     assert_eq!(specs[0].min, None);
@@ -184,12 +182,12 @@ fn specs_carry_names_bounds_and_vary_flags() {
     assert_eq!(specs[2].max, None);
 }
 
-/// `MODEL_NAME` comes from the struct name, lowercased — it is what prefixes
-/// a composite's parameter names.
+/// `MODEL_NAME` comes from the struct name, lowercased — it is what a fit
+/// report shows as the model's name.
 #[test]
 fn model_name_is_derived_from_the_type_name() {
     assert_eq!(DerivedGaussian::MODEL_NAME, "derived_gaussian");
-    assert_eq!(Constant::MODEL_NAME, "constant");
+    assert_eq!(OutOfOrder::MODEL_NAME, "out_of_order");
 }
 
 #[test]
@@ -238,7 +236,7 @@ fn parameter_order_follows_declaration_order() {
     assert_eq!(m.get(1), 2.0);
     assert_eq!(m.get(2), 3.0);
 
-    let rebuilt = m.with_values(&[10.0, 20.0, 30.0]);
+    let rebuilt = m.at_values(&[10.0, 20.0, 30.0]);
     assert_eq!(rebuilt.zeta, 10.0);
     assert_eq!(rebuilt.alpha, 20.0);
     assert_eq!(rebuilt.mid, 30.0);
@@ -314,8 +312,7 @@ impl Curve for PinnedGaussian {
     }
 }
 
-/// `#[model(name = "...")]` overrides the prefix, which is how a composite of
-/// two models of the same type stays unambiguous.
+/// `#[model(name = "...")]` overrides the name the model reports under.
 #[derive(Model, Debug)]
 #[model(name = "g")]
 struct Renamed {
@@ -329,20 +326,8 @@ impl Curve for Renamed {
     }
 }
 
-#[derive(Model, Debug)]
-struct Constant {
-    #[param(value = 0.0)]
-    c: f64,
-}
-
-impl Curve for Constant {
-    fn eval(&self, _x: f64) -> f64 {
-        self.c
-    }
-}
-
 #[test]
-fn model_name_attribute_overrides_the_prefix() {
+fn model_name_attribute_overrides_the_reported_name() {
     assert_eq!(Renamed::MODEL_NAME, "g");
     let names: Vec<String> = Renamed::default()
         .specs()
@@ -353,75 +338,66 @@ fn model_name_attribute_overrides_the_prefix() {
 }
 
 // ---------------------------------------------------------------------------
-// Composites
+// Line shapes
 // ---------------------------------------------------------------------------
 
-/// `+` on two derived models must build a composite with prefixed, distinct
-/// parameter names — this is what the generated `Add` impl exists for.
-#[test]
-fn derived_models_combine_with_the_add_operator() {
-    let model = DerivedGaussian::default() + Constant::default();
-
-    assert_eq!(model.nparams(), 4);
-    let names: Vec<String> = model.specs().into_iter().map(|s| s.name).collect();
-    assert_eq!(
-        names,
-        vec![
-            "derived_gaussian_amp",
-            "derived_gaussian_cen",
-            "derived_gaussian_wid",
-            "constant_c"
-        ]
-    );
-
-    let params = model.parameters().expect("distinct names");
-    assert_eq!(params.len(), 4);
+/// The built-in line shapes are plain functions, so a model combines them by
+/// arithmetic — a derived struct whose `eval` sums a peak and a background.
+#[derive(Model, Debug)]
+struct PeakOnBackground {
+    #[param(value = 3.0)]
+    amplitude: f64,
+    #[param(value = 4.0)]
+    center: f64,
+    #[param(value = 1.5, min = 0.0)]
+    sigma: f64,
+    #[param(value = 0.0)]
+    background: f64,
 }
 
-/// A composite of a derived model and a constant must fit an offset Gaussian.
+impl Curve for PeakOnBackground {
+    fn eval(&self, x: f64) -> f64 {
+        lmfit::lineshapes::gaussian(x, self.amplitude, self.center, self.sigma) + self.background
+    }
+}
+
+/// A model built from line shapes must fit an offset Gaussian. The data use
+/// the normalised form — `amplitude` is the area, not the peak height.
 #[test]
-fn a_composite_fits_a_sum_of_curves() {
+fn line_shapes_fit_a_sum_of_curves() {
     let x = xs(121);
     let y: Vec<f64> = x
         .iter()
-        .map(|&xi| 5.0 * (-(xi - 5.0f64).powi(2) / 2.0).exp() + 0.75)
+        .map(|&xi| {
+            5.0 / (std::f64::consts::TAU.sqrt() * 2.0) * (-(xi - 5.0f64).powi(2) / 8.0).exp()
+                + 0.75
+        })
         .collect();
 
-    let model = DerivedGaussian {
-        amp: 3.0,
-        cen: 4.0,
-        wid: 1.5,
-    } + Constant { c: 0.0 };
+    let model = PeakOnBackground {
+        amplitude: 3.0,
+        center: 4.0,
+        sigma: 1.5,
+        background: 0.0,
+    };
 
     let result = model.fit(&y, &x).expect("fit ran");
     assert!(result.success, "{}", result.message);
 
     assert!(
-        (result.model.a.amp - 5.0).abs() < 1e-5,
-        "amp = {}",
-        result.model.a.amp
+        (result.model.amplitude - 5.0).abs() < 1e-5,
+        "amplitude = {}",
+        result.model.amplitude
     );
-    assert!((result.model.a.cen - 5.0).abs() < 1e-5);
-    assert!((result.model.a.wid - 2.0).abs() < 1e-5);
+    assert!((result.model.center - 5.0).abs() < 1e-5);
+    assert!((result.model.sigma - 2.0).abs() < 1e-5);
     assert!(
-        (result.model.b.c - 0.75).abs() < 1e-5,
-        "c = {}",
-        result.model.b.c
+        (result.model.background - 0.75).abs() < 1e-5,
+        "background = {}",
+        result.model.background
     );
 
-    // The prefixed names are what the parameter collection reports.
-    assert!(result.params.get("derived_gaussian_amp").is_some());
-    assert!(result.params.get("constant_c").is_some());
-}
-
-/// A composite of two models that share a `MODEL_NAME` produces colliding
-/// parameter names, and says so rather than silently merging them.
-#[test]
-fn same_type_composites_report_the_collision() {
-    let model = DerivedGaussian::default() + DerivedGaussian::default();
-    let err = model.fit(&[1.0, 2.0], &[1.0, 2.0]).unwrap_err();
-    assert!(
-        matches!(err, lmfit::Error::DuplicateParameter { .. }),
-        "expected a duplicate-name error, got {err:?}"
-    );
+    // Parameter names are the field names, no prefixes anywhere.
+    assert!(result.params.get("amplitude").is_some());
+    assert!(result.params.get("background").is_some());
 }

@@ -2,8 +2,27 @@
 //!
 //! Run with `cargo run --example fit_gaussian`.
 
-use lmfit::models::{Constant, Gaussian};
-use lmfit::{Curve, Error};
+use lmfit::lineshapes::gaussian;
+use lmfit::{Curve, Error, Model};
+
+/// The model: one struct, and its `eval` is the arithmetic.
+#[derive(Model)]
+struct PeakOnBackground {
+    #[param(value = 4.0)]
+    amplitude: f64,
+    #[param(value = 4.0)]
+    center: f64,
+    #[param(value = 1.0, min = 0.0)]
+    sigma: f64,
+    #[param(value = 0.0)]
+    background: f64,
+}
+
+impl Curve for PeakOnBackground {
+    fn eval(&self, x: f64) -> f64 {
+        gaussian(x, self.amplitude, self.center, self.sigma) + self.background
+    }
+}
 
 /// Deterministic pseudo-noise in `[-0.5, 0.5)`.
 ///
@@ -25,18 +44,17 @@ fn main() -> Result<(), Error> {
         .iter()
         .enumerate()
         .map(|(i, &t)| {
-            let peak = area / (std::f64::consts::TAU.sqrt() * sigma)
-                * (-(t - center).powi(2) / (2.0 * sigma.powi(2))).exp();
-            peak + background + 0.05 * noise(i)
+            gaussian(t, area, center, sigma) + background + 0.05 * noise(i)
         })
         .collect();
 
-    // A peak plus a flat offset — note that this is simply `+`.
-    let model = Gaussian {
+    // The struct's field values are the starting guesses.
+    let model = PeakOnBackground {
         amplitude: 4.0,
         center: 4.0,
         sigma: 1.0,
-    } + Constant { c: 0.0 };
+        background: 0.0,
+    };
 
     let result = model.fit(&y, &x)?;
 
@@ -46,18 +64,20 @@ fn main() -> Result<(), Error> {
     println!("true:  area={area}  centre={center}  sigma={sigma}  background={background}");
     println!(
         "fitted: area={:.4}  centre={:.4}  sigma={:.4}  background={:.4}",
-        result.model.a.amplitude, result.model.a.center, result.model.a.sigma, result.model.b.c
+        result.model.amplitude, result.model.center, result.model.sigma, result.model.background
     );
 
-    // The components can be evaluated separately, which is the point of
-    // keeping a composite as two models rather than one merged function.
-    let peak_only = result.model.a.eval(result.model.a.center);
+    // The fitted fields feed the same line shape back, so the components are
+    // recoverable by calling it directly.
+    let peak_only = gaussian(
+        result.model.center,
+        result.model.amplitude,
+        result.model.center,
+        result.model.sigma,
+    );
     println!();
     println!("peak height at centre: {peak_only:.4}");
-    println!(
-        "value from the composite: {:.4}",
-        result.model.eval(result.model.a.center)
-    );
+    println!("value from the model:  {:.4}", result.model.eval(result.model.center));
 
     Ok(())
 }

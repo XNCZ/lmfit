@@ -43,15 +43,32 @@ fn main() -> Result<(), lmfit::Error> {
 }
 ```
 
-## Models combine with `+`
+## Line shapes combine by arithmetic
 
-Each side's parameters are prefix-qualified, so they stay distinct. Any depth of
-nesting works, and the components stay separate — you can evaluate one half of a
-composite without the other.
+Line shapes are plain functions, so a model is one struct whose `eval` does the
+arithmetic — a peak plus a background is just a sum of two calls:
 
 ```rust
-use lmfit::models::{Constant, Gaussian};
-use lmfit::Curve;
+use lmfit::lineshapes::gaussian;
+use lmfit::{Curve, Model};
+
+#[derive(Model)]
+struct PeakOnBackground {
+    #[param(value = 4.0)]
+    amplitude: f64,
+    #[param(value = 4.0)]
+    center: f64,
+    #[param(value = 1.5, min = 0.0)]
+    sigma: f64,
+    #[param(value = 0.0)]
+    background: f64,
+}
+
+impl Curve for PeakOnBackground {
+    fn eval(&self, x: f64) -> f64 {
+        gaussian(x, self.amplitude, self.center, self.sigma) + self.background
+    }
+}
 
 fn main() -> Result<(), lmfit::Error> {
     let x: Vec<f64> = (0..101).map(|i| i as f64 / 10.0).collect();
@@ -64,16 +81,11 @@ fn main() -> Result<(), lmfit::Error> {
         })
         .collect();
 
-    let model = Gaussian { amplitude: 4.0, center: 4.0, sigma: 1.5 } + Constant { c: 0.0 };
-    let result = model.fit(&y, &x)?;
+    let result = PeakOnBackground { amplitude: 4.0, center: 4.0, sigma: 1.5, background: 0.0 }
+        .fit(&y, &x)?;
 
-    // The composite keeps its two halves: `.a` is the Gaussian, `.b` the constant.
-    println!("area       = {}", result.model.a.amplitude);
-    println!("background = {}", result.model.b.c);
-
-    // Parameters are reported under their prefixed names.
-    assert!(result.params.get("gaussian_amplitude").is_some());
-    assert!(result.params.get("constant_c").is_some());
+    println!("area       = {}", result.model.amplitude);
+    println!("background = {}", result.model.background);
     Ok(())
 }
 ```
@@ -118,7 +130,23 @@ bounds and starting points, the curve, the residuals, and the usual statistics.
 | `success`, `message` | whether the solver converged, and how it ended |
 
 ```rust
-use lmfit::{Curve, models::Gaussian};
+use lmfit::{Curve, Model};
+
+#[derive(Model)]
+struct Gaussian {
+    #[param(value = 5.0)]
+    amp: f64,
+    #[param(value = 5.0)]
+    cen: f64,
+    #[param(value = 2.0, min = 0.0)]
+    wid: f64,
+}
+
+impl Curve for Gaussian {
+    fn eval(&self, x: f64) -> f64 {
+        self.amp * (-(x - self.cen).powi(2) / self.wid).exp()
+    }
+}
 
 fn main() -> Result<(), lmfit::Error> {
     let x: Vec<f64> = (0..101).map(|i| i as f64 / 10.0).collect();
@@ -138,12 +166,12 @@ fn main() -> Result<(), lmfit::Error> {
 }
 ```
 
-## Built-in models
+## Line shapes
 
-`lmfit::models` provides `Gaussian` and `Constant`. Note that `Gaussian`'s
-`amplitude` is the **area** under the curve, not the peak height — that is
-lmfit's convention and the opposite of the `amp * exp(..)` form most people
-write from memory.
+`lmfit::lineshapes` provides `gaussian` and `constant` as plain functions.
+Note that `gaussian`'s `amplitude` is the **area** under the curve, not the
+peak height — that is lmfit's convention and the opposite of the
+`amp * exp(..)` form most people write from memory.
 
 ## Implementation
 
@@ -163,10 +191,9 @@ one, and neither knows about the other.
 | `bounds` | lmfit's bounded-parameter transform |
 | `solver` | the LM adapter; the only module that knows the solver exists |
 | `numerics` | finite-difference Jacobian |
-| `composite` | `Sum<A, B>` and the `+` operator |
 | `result` | `ModelResult` and the fit statistics |
 | `report` | `fit_report()` formatting |
-| `models` | ready-made line shapes |
+| `lineshapes` | ready-made line shapes as plain functions |
 
 ## Status
 
@@ -177,7 +204,6 @@ Not yet implemented, in rough order of how much they are missed:
 - Parameter expressions (lmfit's `expr=`), and `guess()`-style heuristics for
   picking starting values.
 - Solvers other than `leastsq`, and global or derivative-free methods.
-- Composite forms beyond `+`.
 
 ## Minimum supported Rust version
 

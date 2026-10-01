@@ -33,40 +33,41 @@
 //! # Ok::<(), lmfit::Error>(())
 //! ```
 //!
-//! Models combine with `+`, and each side's parameters are prefixed so they
-//! stay distinct:
+//! Line shapes are plain functions, so a model combines them by arithmetic
+//! into whatever the physics needs:
 //!
 //! ```
-//! # use lmfit::{Curve, Model};
-//! # #[derive(Model)]
-//! # struct Gaussian {
-//! #     #[param(value = 5.0)] amp: f64,
-//! #     #[param(value = 5.0)] cen: f64,
-//! #     #[param(value = 2.0, min = 0.0)] wid: f64,
-//! # }
-//! # impl Curve for Gaussian {
-//! #     fn eval(&self, x: f64) -> f64 { self.amp * (-(x - self.cen).powi(2) / self.wid).exp() }
-//! # }
+//! # use lmfit::{Curve, Model, lineshapes};
 //! #[derive(Model)]
-//! struct Constant {
+//! struct PeakOnBackground {
+//!     #[param(value = 5.0)]
+//!     amplitude: f64,
+//!     #[param(value = 5.0)]
+//!     center: f64,
+//!     #[param(value = 2.0, min = 0.0)]
+//!     sigma: f64,
 //!     #[param(value = 0.0)]
-//!     c: f64,
+//!     background: f64,
 //! }
 //!
-//! impl Curve for Constant {
-//!     fn eval(&self, _x: f64) -> f64 {
-//!         self.c
+//! impl Curve for PeakOnBackground {
+//!     fn eval(&self, x: f64) -> f64 {
+//!         lineshapes::gaussian(x, self.amplitude, self.center, self.sigma) + self.background
 //!     }
 //! }
 //!
 //! # let x: Vec<f64> = (0..101).map(|i| i as f64 / 10.0).collect();
 //! # let y: Vec<f64> = x.iter().map(|&t| 5.0 * (-(t - 5.0f64).powi(2) / 2.0).exp() + 0.75).collect();
-//! let model = Gaussian { amp: 4.0, cen: 4.0, wid: 1.5 } + Constant { c: 0.0 };
-//! let result = model.fit(&y, &x)?;
+//! let result = PeakOnBackground {
+//!     amplitude: 4.0,
+//!     center: 4.0,
+//!     sigma: 1.5,
+//!     background: 0.0,
+//! }
+//! .fit(&y, &x)?;
 //!
-//! assert!((result.model.b.c - 0.75).abs() < 1e-6);
-//! assert!(result.params.get("gaussian_amp").is_some());
-//! assert!(result.params.get("constant_c").is_some());
+//! assert!((result.model.background - 0.75).abs() < 1e-6);
+//! assert!((result.model.center - 5.0).abs() < 1e-6);
 //! # Ok::<(), lmfit::Error>(())
 //! ```
 
@@ -76,9 +77,8 @@
 extern crate self as lmfit;
 
 pub mod bounds;
-pub mod composite;
 pub mod error;
-pub mod models;
+pub mod lineshapes;
 pub mod numerics;
 pub mod parameter;
 pub mod report;
@@ -87,7 +87,6 @@ pub mod solver;
 pub mod traits;
 
 pub use bounds::Transform;
-pub use composite::Sum;
 pub use error::{Error, Result};
 pub use parameter::{Parameter, Parameters};
 pub use result::ModelResult;

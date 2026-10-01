@@ -26,7 +26,7 @@ pub fn parse_param(attr: &Attribute) -> Result<ParamAttrs> {
     let mut out = ParamAttrs::default();
 
     attr.parse_nested_meta(|meta| {
-        let target = if meta.path.is_ident("value") {
+        let tgt = if meta.path.is_ident("value") {
             &mut out.value
         } else if meta.path.is_ident("min") {
             &mut out.min
@@ -40,10 +40,10 @@ pub fn parse_param(attr: &Attribute) -> Result<ParamAttrs> {
             );
         };
 
-        if target.is_some() {
+        if tgt.is_some() {
             return Err(meta.error("duplicate `param` key"));
         }
-        *target = Some(meta.value()?.parse()?);
+        *tgt = Some(meta.value()?.parse()?);
         Ok(())
     })?;
 
@@ -55,7 +55,7 @@ pub fn parse_param(attr: &Attribute) -> Result<ParamAttrs> {
 /// Returns `None` when no such attribute is present, and an error when one is
 /// present but malformed.
 pub fn parse_model_name(attrs: &[Attribute]) -> Result<Option<String>> {
-    let mut found = None;
+    let mut model_name = None;
 
     for attr in attrs {
         if !attr.path().is_ident("model") {
@@ -65,24 +65,24 @@ pub fn parse_model_name(attrs: &[Attribute]) -> Result<Option<String>> {
             if !meta.path.is_ident("name") {
                 return Err(meta.error("unknown `model` key; expected `name`"));
             }
-            if found.is_some() {
+            if model_name.is_some() {
                 return Err(meta.error("duplicate `model(name = ..)`"));
             }
             let lit: syn::LitStr = meta.value()?.parse()?;
-            found = Some(lit.value());
+            model_name = Some(lit.value());
             Ok(())
         })?;
     }
 
-    Ok(found)
+    Ok(model_name)
 }
 
-/// Turn a type name into the prefix used for composite parameter names.
+/// Turn a type name into the name a model reports under.
 ///
 /// `Gaussian` becomes `gaussian` and `BoundedGaussian` becomes
-/// `bounded_gaussian`, so a composite reads as `gaussian_amp` rather than
-/// `boundedgaussian_amp`. Runs of capitals (as in `XPSModel`) get a separator
-/// before each one; that is rarely what anyone wants, which is what the
+/// `bounded_gaussian`, so a fit report reads a model's name the way a person
+/// would say it. Runs of capitals (as in `XPSModel`) get a separator before
+/// each one; that is rarely what anyone wants, which is what the
 /// `#[model(name = "...")]` override is for.
 pub fn to_snake_case(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 4);

@@ -27,8 +27,7 @@ use crate::error::{Error, Result};
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parameter {
-    /// Name as it appears in the fit report, and in composite models the
-    /// fully-qualified name such as `gaussian_amp`.
+    /// Name as it appears in the fit report.
     pub name: String,
     /// Current value.
     pub value: f64,
@@ -80,7 +79,7 @@ impl Parameter {
 
     /// Pin this parameter: it keeps its value and the solver ignores it.
     #[must_use]
-    pub fn fixed(mut self) -> Self {
+    pub fn fix(mut self) -> Self {
         self.vary = false;
         self
     }
@@ -150,9 +149,10 @@ impl Parameters {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::DuplicateParameter`] if the name is already taken.
-    /// Composite models rely on this: two sub-models of the same type would
-    /// otherwise silently share a name and corrupt each other's values.
+    /// Returns [`Error::DuplicateParameter`] if the name is already taken. A
+    /// derived model cannot trip this — its field names are unique by
+    /// construction — but a hand-written impl that emits the same name twice
+    /// is a bug worth reporting rather than silently merging.
     pub fn push(&mut self, parameter: Parameter) -> Result<()> {
         if self.get(&parameter.name).is_some() {
             return Err(Error::DuplicateParameter {
@@ -177,13 +177,13 @@ impl Parameters {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::DuplicateParameter`] if no parameter has that name —
-    /// a misspelled name in a runtime override is a bug worth reporting, not
+    /// Returns [`Error::UnknownParameter`] if no parameter has that name — a
+    /// misspelled name in a runtime override is a bug worth reporting, not
     /// something to ignore. Also surfaces [`Parameter::set_value`]'s errors.
     pub fn set_value(&mut self, name: &str, value: f64) -> Result<()> {
         match self.get_mut(name) {
             Some(p) => p.set_value(value),
-            None => Err(Error::DuplicateParameter {
+            None => Err(Error::UnknownParameter {
                 name: name.to_string(),
             }),
         }
@@ -210,7 +210,7 @@ impl Parameters {
     }
 
     /// Indices of the parameters the solver is allowed to vary.
-    pub fn varied_indices(&self) -> Vec<usize> {
+    pub fn no_fix_indices(&self) -> Vec<usize> {
         self.items
             .iter()
             .enumerate()
@@ -248,7 +248,7 @@ mod tests {
         assert_eq!(p.max, Some(10.0));
         assert!(p.vary);
 
-        let fixed = Parameter::new("c", 1.0).fixed();
+        let fixed = Parameter::new("c", 1.0).fix();
         assert!(!fixed.vary);
     }
 
@@ -293,9 +293,9 @@ mod tests {
     fn varied_indices_skips_fixed_parameters() {
         let mut params = Parameters::new();
         params.push(Parameter::new("a", 1.0)).unwrap();
-        params.push(Parameter::new("b", 1.0).fixed()).unwrap();
+        params.push(Parameter::new("b", 1.0).fix()).unwrap();
         params.push(Parameter::new("c", 1.0)).unwrap();
-        assert_eq!(params.varied_indices(), vec![0, 2]);
+        assert_eq!(params.no_fix_indices(), vec![0, 2]);
     }
 
     /// A bound error must name the parameter it came from, so a fit over a

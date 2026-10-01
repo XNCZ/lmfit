@@ -12,10 +12,9 @@ lmfit = "0.1"
 ```
 
 `#[derive(Model)]` turns a struct into a set of fit parameters — one per field,
-in declaration order — and generates `Default` and `Add` so the model can be
-built from its starting guesses and combined with `+`. It deliberately does
-**not** generate the model's arithmetic: you write that yourself as
-`impl Curve`.
+in declaration order — and generates `Default` so the model can be built from
+its starting guesses. It deliberately does **not** generate the model's
+arithmetic: you write that yourself as `impl Curve`.
 
 See the [`lmfit` README](https://github.com/XNCZ/lmfit#readme) for the full
 picture.

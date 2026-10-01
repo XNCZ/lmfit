@@ -20,12 +20,10 @@ use crate::result::ModelResult;
 
 /// Metadata describing one fittable field of a model.
 ///
-/// Generated per field by `#[derive(Model)]`. The name is fully qualified: a
-/// field called `amp` inside a model used in a composite arrives here as
-/// `gaussian_amp`.
+/// Generated per field by `#[derive(Model)]`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamSpec {
-    /// Fully-qualified parameter name.
+    /// The field's name.
     pub name: String,
     /// Value the fit starts from.
     pub value: f64,
@@ -45,33 +43,31 @@ pub struct ParamSpec {
 /// Every method here must agree on that order; nothing else in the crate
 /// assumes anything about it.
 pub trait ModelParams {
-    /// Base name used to prefix this model's parameters when it takes part in
-    /// a composite, so that `Gaussian + Constant` yields `gaussian_amp` and
-    /// `constant_c` rather than two ambiguous `amp`/`c` pairs.
+    /// How this model names itself in a fit report.
     ///
     /// A `&'static str` rather than `std::any::type_name`, whose output format
     /// is explicitly not stable across compilations and carries module paths.
     const MODEL_NAME: &'static str;
 
+    /// How many fittable fields this model has.
+    ///
+    /// Must equal `specs().len()`. A `const` rather than a method because the
+    /// layout is fixed at compile time — the solver reads it in its inner loop
+    /// without a call or an allocation. The derive macro emits a literal.
+    const NPARAMS: usize;
+
     /// One spec per fittable field, in field-declaration order.
     ///
     /// Allocates, so it is called when a fit is set up and when a report is
-    /// printed — never in the solver's inner loop. Use [`Self::nparams`] there.
+    /// printed — never in the solver's inner loop. Use [`Self::NPARAMS`] there.
     fn specs(&self) -> Vec<ParamSpec>;
-
-    /// How many fittable fields this model has.
-    ///
-    /// Must equal `specs().len()`, but must not allocate: the solver calls it
-    /// once per parameter per iteration. The derive macro emits a literal, and
-    /// composites sum their children's counts.
-    fn nparams(&self) -> usize;
 
     /// Read field `index` as a float.
     ///
     /// # Panics
     ///
-    /// Implementations may panic if `index >= nparams()`. The solver only ever
-    /// passes indices that came from [`Self::varied_indices`].
+    /// Implementations may panic if `index >= NPARAMS`. The solver only ever
+    /// passes indices that came from [`Parameters::no_fix_indices`].
     fn get(&self, index: usize) -> f64;
 
     /// Write field `index`.
@@ -81,7 +77,8 @@ pub trait ModelParams {
     /// As [`Self::get`].
     fn set(&mut self, index: usize, value: f64);
 
-    /// A copy of this model with `values` written in, in index order.
+    /// The parameter struct built from `values`, in index order — the model
+    /// at those parameter values.
     ///
     /// Takes `&self` and returns a new value rather than mutating, which is
     /// what lets the solver build perturbed models for its finite-difference
@@ -90,26 +87,16 @@ pub trait ModelParams {
     ///
     /// # Panics
     ///
-    /// Implementations may panic if `values.len() != nparams()`.
-    fn with_values(&self, values: &[f64]) -> Self;
-
-    /// How this model names itself in a fit report.
-    ///
-    /// Defaults to [`Self::MODEL_NAME`]. Composites override it so that a
-    /// report reads `(gaussian + constant)` rather than `sum` — the prefix
-    /// form is what disambiguates parameters, but it is not what anyone wants
-    /// to read at the top of a report.
-    fn describe(&self) -> String {
-        Self::MODEL_NAME.to_string()
-    }
+    /// Implementations may panic if `values.len() != NPARAMS`.
+    fn at_values(&self, values: &[f64]) -> Self;
 
     /// Build the runtime [`Parameters`] collection this model describes.
     ///
     /// # Errors
     ///
     /// Returns [`crate::Error::DuplicateParameter`] if two fields resolve to
-    /// the same name — which is how `Gaussian + Gaussian` reports that it
-    /// needs distinct prefixes.
+    /// the same name — impossible for a derived model, where field names are
+    /// unique, but a hand-written impl could still emit one.
     fn parameters(&self) -> Result<Parameters> {
         let mut params = Parameters::new();
         for spec in self.specs() {

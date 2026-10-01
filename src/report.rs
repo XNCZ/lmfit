@@ -94,7 +94,7 @@ impl<M: ModelParams> ModelResult<M> {
     fn write_model(&self, out: &mut String) {
         out.push_str("[[Model]]\n");
         out.push_str("    ");
-        out.push_str(&self.model.describe());
+        out.push_str(M::MODEL_NAME);
         out.push('\n');
     }
 

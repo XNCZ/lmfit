@@ -78,7 +78,7 @@ pub(crate) struct LmProblem<'a, M> {
     /// First data point whose residual came out non-finite, if any. Preserved
     /// so that an aborted fit can say *where* it went wrong rather than
     /// reporting the solver's opaque `User("residuals")`.
-    failed_at: Cell<Option<usize>>,
+    nonfinite_at: Cell<Option<usize>>,
 }
 
 impl<'a, M: Curve> LmProblem<'a, M> {
@@ -90,7 +90,7 @@ impl<'a, M: Curve> LmProblem<'a, M> {
             varying,
             cache: RefCell::new(Cache::default()),
             nfev: Cell::new(0),
-            failed_at: Cell::new(None),
+            nonfinite_at: Cell::new(None),
         }
     }
 
@@ -113,15 +113,15 @@ impl<'a, M: Curve> LmProblem<'a, M> {
         x: &[f64],
         y: &[f64],
         nfev: &Cell<usize>,
-        failed_at: &Cell<Option<usize>>,
+        nonfinite_at: &Cell<Option<usize>>,
         out: &mut [f64],
     ) -> bool {
         nfev.set(nfev.get() + 1);
         for (i, (&xi, &yi)) in x.iter().zip(y).enumerate() {
             let r = yi - model.eval(xi);
             if !r.is_finite() {
-                if failed_at.get().is_none() {
-                    failed_at.set(Some(i));
+                if nonfinite_at.get().is_none() {
+                    nonfinite_at.set(Some(i));
                 }
                 return false;
             }
@@ -146,7 +146,7 @@ impl<'a, M: Curve> LmProblem<'a, M> {
             self.x,
             self.y,
             &self.nfev,
-            &self.failed_at,
+            &self.nonfinite_at,
             &mut out,
         ) {
             return None;
@@ -195,11 +195,9 @@ impl<M: Curve> LeastSquaresProblem<f64, Dyn, Dyn> for LmProblem<'_, M> {
         // probe. Writing every varying entry from `probe` on each call also
         // restores the ones the previous probe disturbed — `probe` is `at`
         // with exactly one entry displaced.
-        let mut full: Vec<f64> = (0..self.model.nparams())
-            .map(|i| self.model.get(i))
-            .collect();
+        let mut full: Vec<f64> = (0..M::NPARAMS).map(|i| self.model.get(i)).collect();
 
-        // A perturbed model is *built*, not mutated: `with_values` takes
+        // A perturbed model is *built*, not mutated: `at_values` takes
         // `&self`, which is what makes this reachable from a `&self` method
         // without interior mutability around the model itself.
         let ok = forward_diff_jacobian(
@@ -209,8 +207,8 @@ impl<M: Curve> LeastSquaresProblem<f64, Dyn, Dyn> for LmProblem<'_, M> {
                 for (j, v) in self.varying.iter().enumerate() {
                     full[v.index] = v.transform.from_internal(probe[j]);
                 }
-                let perturbed = self.model.with_values(&full);
-                Self::residuals_of(&perturbed, self.x, self.y, &self.nfev, &self.failed_at, buf)
+                let perturbed = self.model.at_values(&full);
+                Self::residuals_of(&perturbed, self.x, self.y, &self.nfev, &self.nonfinite_at, buf)
             },
             &mut out,
         );
@@ -235,7 +233,11 @@ pub(crate) fn fit<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> Result<ModelResu
     }
 
     let params = model.parameters()?;
-    let nvarys = params.varied_indices().len();
+    // The one place `specs()` and `NPARAMS` meet on every fit, so a
+    // hand-written impl that disagrees with itself is caught here in debug
+    // builds rather than corrupting a fit.
+    debug_assert_eq!(params.len(), M::NPARAMS, "specs() disagrees with NPARAMS");
+    let nvarys = params.no_fix_indices().len();
     if y.is_empty() {
         return Err(Error::TooFewDataPoints { ndata: 0, nvarys });
     }
@@ -252,8 +254,8 @@ pub(crate) fn fit<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> Result<ModelResu
         })
         .collect::<Result<_>>()?;
 
-    let initial: Vec<f64> = params.values();
-    let working = model.with_values(&initial);
+    let default_values: Vec<f64> = params.values();
+    let working = model.at_values(&default_values);
 
     // Nothing to vary: the model is already at its answer, and handing the
     // solver an empty parameter vector would only make it report
@@ -262,7 +264,7 @@ pub(crate) fn fit<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> Result<ModelResu
         return Ok(assemble(
             working,
             params,
-            initial,
+            default_values,
             x,
             y,
             0,
@@ -278,19 +280,17 @@ pub(crate) fn fit<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> Result<ModelResu
         .with_patience(PATIENCE)
         .minimize(problem);
 
-    let (success, message) = describe(&report.termination, problem.failed_at.get());
+    let (success, message) = describe(&report.termination, problem.nonfinite_at.get());
 
-    // Read the fitted model back out. `with_values` again, so the trait needs
+    // Read the fitted model back out. `at_values` again, so the trait needs
     // no `Clone` bound.
-    let fitted: Vec<f64> = (0..problem.model.nparams())
-        .map(|i| problem.model.get(i))
-        .collect();
-    let fitted_model = model.with_values(&fitted);
+    let fit_result: Vec<f64> = (0..M::NPARAMS).map(|i| problem.model.get(i)).collect();
+    let fit_model = model.at_values(&fit_result);
 
     Ok(assemble(
-        fitted_model,
+        fit_model,
         params,
-        fitted,
+        fit_result,
         x,
         y,
         problem.nfev.get(),
@@ -322,7 +322,7 @@ fn assemble<M: Curve>(
         .map(|(observed, predicted)| observed - predicted)
         .collect();
 
-    let nvarys = params.varied_indices().len();
+    let nvarys = params.no_fix_indices().len();
     let Statistics {
         chisqr,
         redchi,
@@ -357,7 +357,7 @@ fn assemble<M: Curve>(
 /// Every variant is handled explicitly. Collapsing them to "converged or not"
 /// would throw away the one thing a user needs when a fit goes wrong: whether
 /// it ran out of budget, hit a NaN, or genuinely could not improve.
-fn describe(reason: &TerminationReason, failed_at: Option<usize>) -> (bool, String) {
+fn describe(reason: &TerminationReason, nonfinite_at: Option<usize>) -> (bool, String) {
     match reason {
         TerminationReason::Converged { .. } => (true, "Fit succeeded.".to_string()),
         TerminationReason::ResidualsZero => (
@@ -397,8 +397,8 @@ fn describe(reason: &TerminationReason, failed_at: Option<usize>) -> (bool, Stri
         ),
         // The solver reports the same opaque reason for a failed residual and
         // a failed Jacobian. We always supply a Jacobian, so a failure here is
-        // a non-finite residual, and `failed_at` says which point.
-        TerminationReason::User(what) => match failed_at {
+        // a non-finite residual, and `nonfinite_at` says which point.
+        TerminationReason::User(what) => match nonfinite_at {
             Some(i) => (
                 false,
                 format!("Fit stopped: the model produced a non-finite residual at data point {i}."),
