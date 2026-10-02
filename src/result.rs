@@ -6,6 +6,7 @@
 //! unchanged.
 
 use crate::parameter::Parameters;
+use num_complex::Complex64;
 
 /// Everything a completed fit produced.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +61,59 @@ pub struct ModelResult<M> {
     /// including the ones spent on finite differences. Do not "fix" it to
     /// match — the difference is inherent to where the two implementations
     /// draw the line, not an accounting bug.
+    pub nfev: usize,
+
+    /// Whether the solver reached one of its convergence criteria.
+    pub success: bool,
+    /// Human-readable account of how the fit ended.
+    pub message: String,
+}
+
+/// Everything a completed complex fit produced.
+///
+/// 字段镜像 [`ModelResult`],`y`/`best_fit`/`residual` 为复数;复数残差按
+/// 实部、虚部逐点交错进入统计(与 lmfit 对齐):`chisqr = Σ|r_i|²`,
+/// `ndata = 2n`(数据点数的两倍,lmfit 口径),`nfree = ndata - nvarys`。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComplexResult<M> {
+    /// The fitted model. Its fields are the parameter values.
+    pub model: M,
+
+    /// The fitted parameters, in the same order as the model's fields.
+    pub params: Parameters,
+
+    /// The complex independent variable the fit was given(实自变量以虚部 0 嵌入)。
+    pub x: Vec<Complex64>,
+    /// The complex dependent variable the fit was given.
+    pub y: Vec<Complex64>,
+
+    /// The model evaluated at `x` with the fitted parameters.
+    pub best_fit: Vec<Complex64>,
+    /// `y - best_fit`, one entry per data point.
+    pub residual: Vec<Complex64>,
+
+    /// 每个参数的标准误,插入序;固定参数或协方差不可得时为 None。
+    pub stderr: Vec<Option<f64>>,
+    /// 变参数协方差(外部空间),不可得时为 None。
+    pub covar: Option<crate::numerics::Covariance>,
+
+    /// Sum of squared complex residuals, `Σ|r_i|²`.
+    pub chisqr: f64,
+    /// Reduced chi-square, `chisqr / nfree`.
+    pub redchi: f64,
+    /// Akaike information criterion.
+    pub aic: f64,
+    /// Bayesian information criterion.
+    pub bic: f64,
+
+    /// Number of real residual slots, `2n` — 与 lmfit 对齐。
+    pub ndata: usize,
+    /// Number of parameters the solver was allowed to vary.
+    pub nvarys: usize,
+    /// Degrees of freedom, `ndata - nvarys`.
+    pub nfree: usize,
+
+    /// Number of residual evaluations the solver performed.
     pub nfev: usize,
 
     /// Whether the solver reached one of its convergence criteria.

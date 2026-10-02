@@ -11,8 +11,9 @@
 //! `+/- stderr` needs a covariance matrix, and `[[Correlations]]` needs the
 //! same. Both are additive when they arrive.
 
-use crate::parameter::Parameter;
-use crate::result::ModelResult;
+use crate::numerics::Covariance;
+use crate::parameter::{Parameter, Parameters};
+use crate::result::{ComplexResult, ModelResult};
 use crate::traits::ModelParams;
 
 /// Number formatting, modelled on lmfit's `gformat`.
@@ -61,6 +62,146 @@ fn trim_trailing_zeros(formatted: &str) -> String {
     }
 }
 
+/// 报告所需的共享字段:实数与复数结果各自组装后共用同一渲染。
+pub(crate) struct ReportParts<'a> {
+    /// 模型名(`[[Model]]` 行)。
+    pub model_name: &'a str,
+    /// 参数表(含起始值与固定标记)。
+    pub params: &'a Parameters,
+    /// 逐参数标准误,固定参数为 None。
+    pub stderr: &'a [Option<f64>],
+    /// 变参数协方差,不可得时为 None。
+    pub covar: Option<&'a Covariance>,
+    /// 残差求值次数。
+    pub nfev: usize,
+    /// 数据点数(复数口径为槽位数 2n)。
+    pub ndata: usize,
+    /// 变参数个数。
+    pub nvarys: usize,
+    /// 卡方。
+    pub chisqr: f64,
+    /// 约化卡方。
+    pub redchi: f64,
+    /// Akaike 信息准则。
+    pub aic: f64,
+    /// Bayesian 信息准则。
+    pub bic: f64,
+}
+
+/// 按 `[[Model]]`、`[[Fit Statistics]]`、`[[Variables]]`、`[[Correlations]]`
+/// 顺序渲染报告。
+///
+/// * `parts` —— 报告共享字段。
+///
+/// 返回:完整报告文本。
+pub(crate) fn render_report(parts: ReportParts<'_>) -> String {
+    let mut out = String::new();
+    write_model(&parts, &mut out);
+    write_statistics(&parts, &mut out);
+    write_variables(&parts, &mut out);
+    write_correlations(&parts, &mut out);
+    out
+}
+
+fn write_model(parts: &ReportParts<'_>, out: &mut String) {
+    out.push_str("[[Model]]\n");
+    out.push_str("    ");
+    out.push_str(parts.model_name);
+    out.push('\n');
+}
+
+fn write_statistics(parts: &ReportParts<'_>, out: &mut String) {
+    // The label column is padded to its widest entry so every `=` lines up,
+    // which is the whole reason this block is readable.
+    let rows: [(&str, String); 8] = [
+        ("# fitting method", "leastsq".to_string()),
+        ("# function evals", parts.nfev.to_string()),
+        ("# data points", parts.ndata.to_string()),
+        ("# variables", parts.nvarys.to_string()),
+        ("chi-square", gformat(parts.chisqr)),
+        ("reduced chi-square", gformat(parts.redchi)),
+        ("Akaike info crit", gformat(parts.aic)),
+        ("Bayesian info crit", gformat(parts.bic)),
+    ];
+    let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
+
+    out.push_str("[[Fit Statistics]]\n");
+    for (label, value) in rows {
+        out.push_str("    ");
+        out.push_str(label);
+        out.push_str(&" ".repeat(width - label.len()));
+        out.push_str(" = ");
+        out.push_str(&value);
+        out.push('\n');
+    }
+}
+
+fn write_variables(parts: &ReportParts<'_>, out: &mut String) {
+    let params: Vec<&Parameter> = parts.params.iter().collect();
+    if params.is_empty() {
+        return;
+    }
+    let width = params.iter().map(|p| p.name.len()).max().unwrap_or(0);
+
+    // value 与 stderr 两列各自按实测最宽对齐,使 (init/(fixed 标记同列。
+    let value_strs: Vec<String> = params.iter().map(|p| gformat(p.value)).collect();
+    let se_strs: Vec<String> = parts
+        .stderr
+        .iter()
+        .zip(params.iter())
+        .map(|(se, p)| match (se, p.vary) {
+            (Some(s), true) => format!("+/- {}", gformat(*s)),
+            (None, true) | (_, false) => String::new(),
+        })
+        .collect();
+    let value_width = value_strs.iter().map(|s| s.len()).max().unwrap_or(0);
+    let se_width = se_strs.iter().map(|s| s.len()).max().unwrap_or(0);
+
+    out.push_str("[[Variables]]\n");
+    for (i, p) in params.iter().enumerate() {
+        out.push_str("    ");
+        out.push_str(&p.name);
+        out.push(':');
+        out.push_str(&" ".repeat(width - p.name.len()));
+        out.push(' ');
+        out.push_str(&" ".repeat(value_width - value_strs[i].len()));
+        out.push_str(&value_strs[i]);
+        out.push(' ');
+        out.push_str(&se_strs[i]);
+        out.push_str(&" ".repeat(se_width - se_strs[i].len()));
+        out.push(' ');
+        if p.vary {
+            out.push_str("(init = ");
+            out.push_str(&gformat(p.init));
+            out.push(')');
+        } else {
+            out.push_str("(fixed)");
+        }
+        out.push('\n');
+    }
+}
+
+fn write_correlations(parts: &ReportParts<'_>, out: &mut String) {
+    let covar = match parts.covar {
+        Some(c) => c,
+        None => return,
+    };
+    let names: Vec<&str> = parts
+        .params
+        .iter()
+        .filter(|p| p.vary)
+        .map(|p| p.name.as_str())
+        .collect();
+    let pairs = covar.correl();
+    if pairs.is_empty() {
+        return;
+    }
+    out.push_str("[[Correlations]] (unreported correlations are < 0.100)\n");
+    for (i, j, c) in pairs {
+        out.push_str(&format!("    C({}, {}) = {}\n", names[i], names[j], gformat(c)));
+    }
+}
+
 impl<M: ModelParams> ModelResult<M> {
     /// Render the fit as a report.
     ///
@@ -84,111 +225,40 @@ impl<M: ModelParams> ModelResult<M> {
     /// # Ok::<(), lmfit::Error>(())
     /// ```
     pub fn fit_report(&self) -> String {
-        let mut out = String::new();
-        self.write_model(&mut out);
-        self.write_statistics(&mut out);
-        self.write_variables(&mut out);
-        self.write_correlations(&mut out);
-        out
+        render_report(ReportParts {
+            model_name: M::MODEL_NAME,
+            params: &self.params,
+            stderr: &self.stderr,
+            covar: self.covar.as_ref(),
+            nfev: self.nfev,
+            ndata: self.ndata,
+            nvarys: self.nvarys,
+            chisqr: self.chisqr,
+            redchi: self.redchi,
+            aic: self.aic,
+            bic: self.bic,
+        })
     }
+}
 
-    fn write_model(&self, out: &mut String) {
-        out.push_str("[[Model]]\n");
-        out.push_str("    ");
-        out.push_str(M::MODEL_NAME);
-        out.push('\n');
-    }
-
-    fn write_statistics(&self, out: &mut String) {
-        // The label column is padded to its widest entry so every `=` lines up,
-        // which is the whole reason this block is readable.
-        let rows: [(&str, String); 8] = [
-            ("# fitting method", "leastsq".to_string()),
-            ("# function evals", self.nfev.to_string()),
-            ("# data points", self.ndata.to_string()),
-            ("# variables", self.nvarys.to_string()),
-            ("chi-square", gformat(self.chisqr)),
-            ("reduced chi-square", gformat(self.redchi)),
-            ("Akaike info crit", gformat(self.aic)),
-            ("Bayesian info crit", gformat(self.bic)),
-        ];
-        let width = rows.iter().map(|(label, _)| label.len()).max().unwrap_or(0);
-
-        out.push_str("[[Fit Statistics]]\n");
-        for (label, value) in rows {
-            out.push_str("    ");
-            out.push_str(label);
-            out.push_str(&" ".repeat(width - label.len()));
-            out.push_str(" = ");
-            out.push_str(&value);
-            out.push('\n');
-        }
-    }
-
-    fn write_variables(&self, out: &mut String) {
-        let params: Vec<&Parameter> = self.params.iter().collect();
-        if params.is_empty() {
-            return;
-        }
-        let width = params.iter().map(|p| p.name.len()).max().unwrap_or(0);
-
-        // value 与 stderr 两列各自按实测最宽对齐,使 (init/(fixed 标记同列。
-        let value_strs: Vec<String> = params.iter().map(|p| gformat(p.value)).collect();
-        let se_strs: Vec<String> = self
-            .stderr
-            .iter()
-            .zip(params.iter())
-            .map(|(se, p)| match (se, p.vary) {
-                (Some(s), true) => format!("+/- {}", gformat(*s)),
-                (None, true) | (_, false) => String::new(),
-            })
-            .collect();
-        let value_width = value_strs.iter().map(|s| s.len()).max().unwrap_or(0);
-        let se_width = se_strs.iter().map(|s| s.len()).max().unwrap_or(0);
-
-        out.push_str("[[Variables]]\n");
-        for (i, p) in params.iter().enumerate() {
-            out.push_str("    ");
-            out.push_str(&p.name);
-            out.push(':');
-            out.push_str(&" ".repeat(width - p.name.len()));
-            out.push(' ');
-            out.push_str(&" ".repeat(value_width - value_strs[i].len()));
-            out.push_str(&value_strs[i]);
-            out.push(' ');
-            out.push_str(&se_strs[i]);
-            out.push_str(&" ".repeat(se_width - se_strs[i].len()));
-            out.push(' ');
-            if p.vary {
-                out.push_str("(init = ");
-                out.push_str(&gformat(p.init));
-                out.push(')');
-            } else {
-                out.push_str("(fixed)");
-            }
-            out.push('\n');
-        }
-    }
-
-    fn write_correlations(&self, out: &mut String) {
-        let covar = match &self.covar {
-            Some(c) => c,
-            None => return,
-        };
-        let names: Vec<&str> = self
-            .params
-            .iter()
-            .filter(|p| p.vary)
-            .map(|p| p.name.as_str())
-            .collect();
-        let pairs = covar.correl();
-        if pairs.is_empty() {
-            return;
-        }
-        out.push_str("[[Correlations]] (unreported correlations are < 0.100)\n");
-        for (i, j, c) in pairs {
-            out.push_str(&format!("    C({}, {}) = {}\n", names[i], names[j], gformat(c)));
-        }
+impl<M: ModelParams> ComplexResult<M> {
+    /// Render the complex fit as a report.
+    ///
+    /// 与实数报告同构:参数与协方差均为实数,`ndata` 为槽位数 2n。
+    pub fn fit_report(&self) -> String {
+        render_report(ReportParts {
+            model_name: M::MODEL_NAME,
+            params: &self.params,
+            stderr: &self.stderr,
+            covar: self.covar.as_ref(),
+            nfev: self.nfev,
+            ndata: self.ndata,
+            nvarys: self.nvarys,
+            chisqr: self.chisqr,
+            redchi: self.redchi,
+            aic: self.aic,
+            bic: self.bic,
+        })
     }
 }
 

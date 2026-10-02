@@ -16,4 +16,5 @@ members = ["derive"]
 [dependencies]
 levenberg-marquardt = "0.15.0"
 nalgebra = "0.34"
+num-complex = "0.4"
 lmfit_derive = { version = "0.1.0", path = "derive" }

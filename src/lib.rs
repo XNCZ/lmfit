@@ -88,9 +88,10 @@ pub mod traits;
 
 pub use bounds::Transform;
 pub use error::{Error, Result};
+pub use num_complex::Complex64;
 pub use parameter::{Parameter, Parameters};
-pub use result::ModelResult;
-pub use traits::{Curve, ModelParams, ParamSpec};
+pub use result::{ComplexResult, ModelResult};
+pub use traits::{ComplexCurve, Curve, ModelParams, ParamSpec};
 
 /// Derive the parameter plumbing for a curve model.
 ///

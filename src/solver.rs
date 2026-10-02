@@ -23,13 +23,14 @@ use std::cell::{Cell, RefCell};
 
 use levenberg_marquardt::{LeastSquaresProblem, LevenbergMarquardt, TerminationReason};
 use nalgebra::{DMatrix, DVector, Dyn, Matrix, Vector, storage::Owned};
+use num_complex::Complex64;
 
 use crate::bounds::Transform;
 use crate::error::{Error, Result};
-use crate::numerics::{covariance, forward_diff_jacobian};
+use crate::numerics::{Covariance, covariance, forward_diff_jacobian};
 use crate::parameter::Parameters;
-use crate::result::{ModelResult, statistics};
-use crate::traits::Curve;
+use crate::result::{ComplexResult, ModelResult, Statistics, statistics};
+use crate::traits::{ComplexCurve, Curve, ModelParams};
 
 /// scipy's `leastsq` default for `ftol` and `xtol`, which lmfit inherits.
 ///
@@ -65,12 +66,103 @@ struct Cache {
     valid: bool,
 }
 
+/// 观测数据如何把逐点残差写入求解器的实数残差缓冲。
+///
+/// `X` 为自变量元素类型:实数曲线为 `f64`,复数模型接受 `f64` 或 `Complex64`。
+/// 实数观测每个数据点占 1 个槽位;复数观测占 2 个槽位(实部、虚部逐点交错,
+/// 与 numpy `view(float)` 同序)。求解器的其余部分只认识实数残差向量。
+pub(crate) trait ResidualSrc<M: ModelParams, X> {
+    /// 数据点个数。
+    fn npoints(&self) -> usize;
+
+    /// 实数残差缓冲的槽位数(实数 1 倍、复数 2 倍)。
+    fn nslots(&self) -> usize;
+
+    /// 将每个数据点处的残差写入 `out`。
+    ///
+    /// 返回:出现首个非有限残差时记录其数据点下标并返回 false —— 单个 NaN
+    /// 会毒化整条法方程,继续推进没有收益。
+    fn override_residuals(
+        &self,
+        model: &M,
+        x: &[X],
+        nfev: &Cell<usize>,
+        nonfinite_at: &Cell<Option<usize>>,
+        out: &mut [f64],
+    ) -> bool;
+}
+
+impl<'a, M: Curve> ResidualSrc<M, f64> for &'a [f64] {
+    fn npoints(&self) -> usize {
+        self.len()
+    }
+
+    fn nslots(&self) -> usize {
+        self.len()
+    }
+
+    fn override_residuals(
+        &self,
+        model: &M,
+        x: &[f64],
+        nfev: &Cell<usize>,
+        nonfinite_at: &Cell<Option<usize>>,
+        out: &mut [f64],
+    ) -> bool {
+        nfev.set(nfev.get() + 1);
+        for (i, (&xi, &yi)) in x.iter().zip(*self).enumerate() {
+            let r = yi - model.eval(xi);
+            if !r.is_finite() {
+                if nonfinite_at.get().is_none() {
+                    nonfinite_at.set(Some(i));
+                }
+                return false;
+            }
+            out[i] = r;
+        }
+        true
+    }
+}
+
+impl<'a, M: ComplexCurve, X: Copy + Into<Complex64>> ResidualSrc<M, X> for &'a [Complex64] {
+    fn npoints(&self) -> usize {
+        self.len()
+    }
+
+    fn nslots(&self) -> usize {
+        self.len() * 2
+    }
+
+    fn override_residuals(
+        &self,
+        model: &M,
+        x: &[X],
+        nfev: &Cell<usize>,
+        nonfinite_at: &Cell<Option<usize>>,
+        out: &mut [f64],
+    ) -> bool {
+        nfev.set(nfev.get() + 1);
+        for (i, (&xi, &yi)) in x.iter().zip(*self).enumerate() {
+            let r = yi - model.eval(xi.into());
+            if !r.re.is_finite() || !r.im.is_finite() {
+                if nonfinite_at.get().is_none() {
+                    nonfinite_at.set(Some(i));
+                }
+                return false;
+            }
+            out[2 * i] = r.re;
+            out[2 * i + 1] = r.im;
+        }
+        true
+    }
+}
+
 /// A model, its data, and its bounds, presented to the solver as a plain
 /// least-squares problem in unbounded space.
-pub(crate) struct LmProblem<'a, M> {
+pub(crate) struct LmProblem<'a, M, D, X> {
     model: M,
-    x: &'a [f64],
-    y: &'a [f64],
+    x: &'a [X],
+    data: D,
     varying: Vec<Varying>,
     cache: RefCell<Cache>,
     /// Residual evaluations performed, finite-difference probes included.
@@ -81,12 +173,12 @@ pub(crate) struct LmProblem<'a, M> {
     nonfinite_at: Cell<Option<usize>>,
 }
 
-impl<'a, M: Curve> LmProblem<'a, M> {
-    fn new(model: M, x: &'a [f64], y: &'a [f64], varying: Vec<Varying>) -> Self {
+impl<'a, M: ModelParams, D: ResidualSrc<M, X>, X> LmProblem<'a, M, D, X> {
+    fn new(model: M, x: &'a [X], data: D, varying: Vec<Varying>) -> Self {
         Self {
             model,
             x,
-            y,
+            data,
             varying,
             cache: RefCell::new(Cache::default()),
             nfev: Cell::new(0),
@@ -102,37 +194,9 @@ impl<'a, M: Curve> LmProblem<'a, M> {
             .collect()
     }
 
-    /// Residuals of `model` against the data, written into `out`.
-    ///
-    /// Returns `false` on the first non-finite residual, recording its index
-    /// so the caller can report something specific. A single NaN poisons the
-    /// entire normal-equations solve, so there is nothing to gain by pushing
-    /// on past it.
-    fn residuals_of(
-        model: &M,
-        x: &[f64],
-        y: &[f64],
-        nfev: &Cell<usize>,
-        nonfinite_at: &Cell<Option<usize>>,
-        out: &mut [f64],
-    ) -> bool {
-        nfev.set(nfev.get() + 1);
-        for (i, (&xi, &yi)) in x.iter().zip(y).enumerate() {
-            let r = yi - model.eval(xi);
-            if !r.is_finite() {
-                if nonfinite_at.get().is_none() {
-                    nonfinite_at.set(Some(i));
-                }
-                return false;
-            }
-            out[i] = r;
-        }
-        true
-    }
-
     /// Residuals at the model's current values, recomputing only if the cache
     /// does not already hold them for `at`.
-    fn cached_residuals(&self, at: &[f64]) -> Option<Vec<f64>> {
+    fn residuals_cache(&self, at: &[f64]) -> Option<Vec<f64>> {
         {
             let cache = self.cache.borrow();
             if cache.valid && cache.at == at {
@@ -140,15 +204,11 @@ impl<'a, M: Curve> LmProblem<'a, M> {
             }
         }
 
-        let mut out = vec![0.0; self.y.len()];
-        if !Self::residuals_of(
-            &self.model,
-            self.x,
-            self.y,
-            &self.nfev,
-            &self.nonfinite_at,
-            &mut out,
-        ) {
+        let mut out = vec![0.0; self.data.nslots()];
+        if !self
+            .data
+            .override_residuals(&self.model, self.x, &self.nfev, &self.nonfinite_at, &mut out)
+        {
             return None;
         }
 
@@ -160,7 +220,9 @@ impl<'a, M: Curve> LmProblem<'a, M> {
     }
 }
 
-impl<M: Curve> LeastSquaresProblem<f64, Dyn, Dyn> for LmProblem<'_, M> {
+impl<M: ModelParams, D: ResidualSrc<M, X>, X> LeastSquaresProblem<f64, Dyn, Dyn>
+    for LmProblem<'_, M, D, X>
+{
     type ResidualStorage = Owned<f64, Dyn>;
     type JacobianStorage = Owned<f64, Dyn, Dyn>;
     type ParameterStorage = Owned<f64, Dyn>;
@@ -180,12 +242,12 @@ impl<M: Curve> LeastSquaresProblem<f64, Dyn, Dyn> for LmProblem<'_, M> {
 
     fn residuals(&self) -> Option<Vector<f64, Dyn, Self::ResidualStorage>> {
         let at = self.internal_params();
-        self.cached_residuals(&at).map(DVector::from_vec)
+        self.residuals_cache(&at).map(DVector::from_vec)
     }
 
     fn jacobian(&self) -> Option<Matrix<f64, Dyn, Dyn, Self::JacobianStorage>> {
         let at = self.internal_params();
-        let base = self.cached_residuals(&at)?;
+        let base = self.residuals_cache(&at)?;
 
         let nrows = base.len();
         let ncols = self.varying.len();
@@ -208,7 +270,13 @@ impl<M: Curve> LeastSquaresProblem<f64, Dyn, Dyn> for LmProblem<'_, M> {
                     full[v.index] = v.transform.from_internal(probe[j]);
                 }
                 let perturbed = self.model.at_values(&full);
-                Self::residuals_of(&perturbed, self.x, self.y, &self.nfev, &self.nonfinite_at, buf)
+                self.data.override_residuals(
+                    &perturbed,
+                    self.x,
+                    &self.nfev,
+                    &self.nonfinite_at,
+                    buf,
+                )
             },
             &mut out,
         );
@@ -221,14 +289,30 @@ impl<M: Curve> LeastSquaresProblem<f64, Dyn, Dyn> for LmProblem<'_, M> {
     }
 }
 
-/// Run a fit.
+/// 拟合过程中收敛出的共享结果(实数域),供实数/复数两条装配壳使用。
+pub(crate) struct Solution<M> {
+    model: M,
+    params: Parameters,
+    values: Vec<f64>,
+    nfev: usize,
+    success: bool,
+    message: String,
+    jac_for_cov: Option<(Vec<f64>, Vec<f64>)>,
+}
+
+/// 运行一次拟合的共享骨架:校验、装配、求解、读回与最终雅可比。
 ///
-/// Split out of [`Curve::fit`] so the trait stays a thin facade.
-pub(crate) fn fit<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> Result<ModelResult<M>> {
-    if x.len() != y.len() {
+/// * `model` —— 起点模型;`data` —— 观测(实数或复数);`x` —— 自变量。
+///
+/// 返回:收敛点的共享结果;长度不符或数据为空时报错。
+pub(crate) fn fit_core<M: ModelParams, D, X>(model: &M, data: D, x: &[X]) -> Result<Solution<M>>
+where
+    D: ResidualSrc<M, X>,
+{
+    if x.len() != data.npoints() {
         return Err(Error::DimensionMismatch {
             x: x.len(),
-            y: y.len(),
+            y: data.npoints(),
         });
     }
 
@@ -238,7 +322,7 @@ pub(crate) fn fit<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> Result<ModelResu
     // builds rather than corrupting a fit.
     debug_assert_eq!(params.len(), M::NPARAMS, "specs() disagrees with NPARAMS");
     let nvarys = params.no_fix_indices().len();
-    if y.is_empty() {
+    if data.npoints() == 0 {
         return Err(Error::TooFewDataPoints { ndata: 0, nvarys });
     }
 
@@ -261,20 +345,18 @@ pub(crate) fn fit<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> Result<ModelResu
     // solver an empty parameter vector would only make it report
     // `NoParameters`.
     if varying.is_empty() {
-        return Ok(assemble(
-            working,
+        return Ok(Solution {
+            model: working,
             params,
-            default_values,
-            x,
-            y,
-            0,
-            true,
-            "Fit succeeded: there was nothing to vary.".to_string(),
-            None,
-        ));
+            values: default_values,
+            nfev: 0,
+            success: true,
+            message: "Fit succeeded: there was nothing to vary.".to_string(),
+            jac_for_cov: None,
+        });
     }
 
-    let problem = LmProblem::new(working, x, y, varying);
+    let problem = LmProblem::new(working, x, data, varying);
 
     let (problem, report) = LevenbergMarquardt::<f64>::new()
         .with_tol(TOL)
@@ -290,7 +372,7 @@ pub(crate) fn fit<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> Result<ModelResu
 
     // 最终雅可比:在收敛点差分,供协方差使用。探测次数计入 nfev。
     let at: Vec<f64> = problem.internal_params();
-    let base = match problem.cached_residuals(&at) {
+    let base = match problem.residuals_cache(&at) {
         Some(r) => r,
         None => Vec::new(),
     };
@@ -308,10 +390,9 @@ pub(crate) fn fit<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> Result<ModelResu
                         full[v.index] = v.transform.from_internal(probe[j]);
                     }
                     let perturbed = problem.model.at_values(&full);
-                    LmProblem::residuals_of(
+                    problem.data.override_residuals(
                         &perturbed,
                         problem.x,
-                        problem.y,
                         &problem.nfev,
                         &problem.nonfinite_at,
                         buf,
@@ -331,32 +412,49 @@ pub(crate) fn fit<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> Result<ModelResu
         false => None,
     };
 
-    Ok(assemble(
-        fit_model,
+    Ok(Solution {
+        model: fit_model,
         params,
-        fit_result,
-        x,
-        y,
-        problem.nfev.get(),
+        values: fit_result,
+        nfev: problem.nfev.get(),
         success,
         message,
         jac_for_cov,
-    ))
+    })
 }
 
-/// Build the result, computing the curve and every statistic that describes it.
-#[allow(clippy::too_many_arguments)]
-fn assemble<M: Curve>(
-    model: M,
-    mut params: Parameters,
-    values: Vec<f64>,
-    x: &[f64],
-    y: &[f64],
-    nfev: usize,
-    success: bool,
-    message: String,
-    jac_for_cov: Option<(Vec<f64>, Vec<f64>)>,
-) -> ModelResult<M> {
+/// Run a fit.
+///
+/// Split out of [`Curve::fit`] so the trait stays a thin facade.
+pub(crate) fn fit<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> Result<ModelResult<M>> {
+    let solved = fit_core(model, y, x)?;
+    Ok(assemble_real(solved, y, x))
+}
+
+/// Run a complex fit.
+///
+/// [`ComplexCurve::fit`] 的薄壳:与实数 [`fit`] 共享 `fit_core` 骨架。
+pub(crate) fn fit_complex<M: ComplexCurve, X: Copy + Into<Complex64>>(
+    model: &M,
+    y: &[Complex64],
+    x: &[X],
+) -> Result<ComplexResult<M>> {
+    let solved = fit_core(model, y, x)?;
+    Ok(assemble_complex(solved, y, x))
+}
+
+/// 由共享结果装配实数拟合结果:重建曲线与残差,补齐统计、协方差与标准误。
+fn assemble_real<M: Curve>(solved: Solution<M>, y: &[f64], x: &[f64]) -> ModelResult<M> {
+    let Solution {
+        model,
+        mut params,
+        values,
+        nfev,
+        success,
+        message,
+        jac_for_cov,
+    } = solved;
+
     for (p, v) in params.iter_mut().zip(&values) {
         p.value = *v;
     }
@@ -369,27 +467,7 @@ fn assemble<M: Curve>(
         .collect();
 
     let nvarys = params.no_fix_indices().len();
-    let stats = statistics(&residual, nvarys);
-
-    // 协方差与标准误:雅可比不可得或不可信时全部为 None。
-    let covar = match &jac_for_cov {
-        Some((jac, gradients)) => covariance(jac, stats.redchi, gradients),
-        None => None,
-    };
-    let mut stderr: Vec<Option<f64>> = vec![None; params.len()];
-    match &covar {
-        Some(c) => {
-            let se = c.stderr();
-            let mut k = 0;
-            for (i, p) in params.iter().enumerate() {
-                if p.vary {
-                    stderr[i] = Some(se[k]);
-                    k += 1;
-                }
-            }
-        }
-        None => {}
-    }
+    let (stats, covar, stderr) = finish(&params, nvarys, &residual, jac_for_cov);
 
     ModelResult {
         model,
@@ -411,6 +489,103 @@ fn assemble<M: Curve>(
         success,
         message,
     }
+}
+
+/// 由共享结果装配复数拟合结果:重建复曲线与复残差,交错为实数残差后
+/// 复用统计、协方差与标准误计算。
+fn assemble_complex<M: ComplexCurve, X: Copy + Into<Complex64>>(
+    solved: Solution<M>,
+    y: &[Complex64],
+    x: &[X],
+) -> ComplexResult<M> {
+    let Solution {
+        model,
+        mut params,
+        values,
+        nfev,
+        success,
+        message,
+        jac_for_cov,
+    } = solved;
+
+    for (p, v) in params.iter_mut().zip(&values) {
+        p.value = *v;
+    }
+
+    let best_fit: Vec<Complex64> = x.iter().map(|&xi| model.eval(xi.into())).collect();
+    let residual: Vec<Complex64> = y
+        .iter()
+        .zip(&best_fit)
+        .map(|(observed, predicted)| observed - predicted)
+        .collect();
+
+    // 逐点交错为实数残差 [re, im](与 numpy view(float) 同序);NaN 自然传播。
+    let mut real_residual = Vec::with_capacity(residual.len() * 2);
+    for r in &residual {
+        real_residual.push(r.re);
+        real_residual.push(r.im);
+    }
+
+    let nvarys = params.no_fix_indices().len();
+    let (stats, covar, stderr) = finish(&params, nvarys, &real_residual, jac_for_cov);
+
+    ComplexResult {
+        model,
+        params,
+        x: x.iter().map(|&v| v.into()).collect(),
+        y: y.to_vec(),
+        best_fit,
+        residual,
+        stderr,
+        covar,
+        chisqr: stats.chisqr,
+        redchi: stats.redchi,
+        aic: stats.aic,
+        bic: stats.bic,
+        ndata: stats.ndata,
+        nvarys,
+        nfree: stats.nfree,
+        nfev,
+        success,
+        message,
+    }
+}
+
+/// 统计量、协方差与标准误的共享计算:实数与复数装配壳共用。
+///
+/// * `params` —— 已回填拟合值的参数表;`nvarys` —— 变参数个数。
+/// * `real_residual` —— 实数残差(复数按实部、虚部交错)。
+/// * `jac_for_cov` —— 最终雅可比与梯度因子,不可得时为 None。
+///
+/// 返回:统计量、协方差与逐参数标准误(固定参数为 None)。
+fn finish(
+    params: &Parameters,
+    nvarys: usize,
+    real_residual: &[f64],
+    jac_for_cov: Option<(Vec<f64>, Vec<f64>)>,
+) -> (Statistics, Option<Covariance>, Vec<Option<f64>>) {
+    let stats = statistics(real_residual, nvarys);
+
+    // 协方差与标准误:雅可比不可得或不可信时全部为 None。
+    let covar = match &jac_for_cov {
+        Some((jac, gradients)) => covariance(jac, stats.redchi, gradients),
+        None => None,
+    };
+    let mut stderr: Vec<Option<f64>> = vec![None; params.len()];
+    match &covar {
+        Some(c) => {
+            let se = c.stderr();
+            let mut k = 0;
+            for (i, p) in params.iter().enumerate() {
+                if p.vary {
+                    stderr[i] = Some(se[k]);
+                    k += 1;
+                }
+            }
+        }
+        None => {}
+    }
+    (stats, covar, stderr)
 }
 
 /// Translate the solver's termination reason into a success flag and a message.

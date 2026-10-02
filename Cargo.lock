@@ -162,6 +162,7 @@ dependencies = [
  "levenberg-marquardt",
  "lmfit_derive",
  "nalgebra",
+ "num-complex",
 ]
 
 [[package]]
