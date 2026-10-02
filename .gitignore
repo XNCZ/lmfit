@@ -1,4 +1,6 @@
 /target
+/docs
 .idea
 command.md
 CLAUDE.md
+.mcp.json
