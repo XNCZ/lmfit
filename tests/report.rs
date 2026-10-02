@@ -192,3 +192,67 @@ fn trim(v: &f64) -> String {
         format!("{v}")
     }
 }
+
+/// stderr 出现在变量行;固定参数仍显示 (fixed),无 +/-。
+#[test]
+fn variables_show_stderr_when_present() {
+    let report = fit_gaussian().fit_report();
+    let amp_line = match report
+        .lines()
+        .find(|l| l.trim_start().starts_with("amp:"))
+    {
+        Some(l) => l,
+        None => panic!("amp line missing"),
+    };
+    assert!(amp_line.contains("+/-"), "{amp_line}");
+}
+
+/// 峰与本底模型,示例同款:本底与峰参数的交换关系产生确定性强相关。
+#[derive(Model, Debug)]
+struct PeakOnBackground {
+    #[param(value = 4.0)]
+    amplitude: f64,
+    #[param(value = 4.0)]
+    center: f64,
+    #[param(value = 1.0, min = 0.0)]
+    sigma: f64,
+    #[param(value = 0.0)]
+    background: f64,
+}
+
+impl Curve for PeakOnBackground {
+    fn eval(&self, x: f64) -> f64 {
+        lmfit::lineshapes::gaussian(x, self.amplitude, self.center, self.sigma) + self.background
+    }
+}
+
+/// 相关块:表头与 C(a, b) = 值 行;无噪精确拟合的奇偶对称使相关全低于
+/// 0.1 阈值,故此处用带本底与噪声的数据(示例同款,相关确定性强)。
+#[test]
+fn correlations_block_lists_qualified_pairs() {
+    let x: Vec<f64> = (0..101).map(|i| i as f64 / 10.0).collect();
+    let y: Vec<f64> = x
+        .iter()
+        .enumerate()
+        .map(|(i, &t)| {
+            let h = (i as u64)
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let n = ((h >> 33) as f64 / (1u64 << 31) as f64) - 0.5;
+            lmfit::lineshapes::gaussian(t, 5.0, 4.5, 0.8) + 0.25 + 0.05 * n
+        })
+        .collect();
+    let result = match PeakOnBackground::default().fit(&y, &x) {
+        Ok(r) => r,
+        Err(e) => panic!("fit failed: {e}"),
+    };
+    let report = result.fit_report();
+    assert!(
+        report.contains("[[Correlations]] (unreported correlations are < 0.100)"),
+        "{report}"
+    );
+    assert!(
+        report.contains("C(amplitude, sigma)") || report.contains("C(sigma, amplitude)"),
+        "{report}"
+    );
+}

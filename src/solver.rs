@@ -26,9 +26,9 @@ use nalgebra::{DMatrix, DVector, Dyn, Matrix, Vector, storage::Owned};
 
 use crate::bounds::Transform;
 use crate::error::{Error, Result};
-use crate::numerics::forward_diff_jacobian;
+use crate::numerics::{covariance, forward_diff_jacobian};
 use crate::parameter::Parameters;
-use crate::result::{ModelResult, Statistics, statistics};
+use crate::result::{ModelResult, statistics};
 use crate::traits::Curve;
 
 /// scipy's `leastsq` default for `ftol` and `xtol`, which lmfit inherits.
@@ -270,6 +270,7 @@ pub(crate) fn fit<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> Result<ModelResu
             0,
             true,
             "Fit succeeded: there was nothing to vary.".to_string(),
+            None,
         ));
     }
 
@@ -287,6 +288,49 @@ pub(crate) fn fit<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> Result<ModelResu
     let fit_result: Vec<f64> = (0..M::NPARAMS).map(|i| problem.model.get(i)).collect();
     let fit_model = model.at_values(&fit_result);
 
+    // 最终雅可比:在收敛点差分,供协方差使用。探测次数计入 nfev。
+    let at: Vec<f64> = problem.internal_params();
+    let base = match problem.cached_residuals(&at) {
+        Some(r) => r,
+        None => Vec::new(),
+    };
+    let ncols = problem.varying.len();
+    let mut jac = vec![0.0; base.len() * ncols];
+    let jac_ok = base.len() > 0
+        && ncols > 0
+        && {
+            let mut full: Vec<f64> = (0..M::NPARAMS).map(|i| problem.model.get(i)).collect();
+            forward_diff_jacobian(
+                &at,
+                &base,
+                |probe, buf| {
+                    for (j, v) in problem.varying.iter().enumerate() {
+                        full[v.index] = v.transform.from_internal(probe[j]);
+                    }
+                    let perturbed = problem.model.at_values(&full);
+                    LmProblem::residuals_of(
+                        &perturbed,
+                        problem.x,
+                        problem.y,
+                        &problem.nfev,
+                        &problem.nonfinite_at,
+                        buf,
+                    )
+                },
+                &mut jac,
+            )
+        };
+    let gradients: Vec<f64> = problem
+        .varying
+        .iter()
+        .enumerate()
+        .map(|(j, v)| v.transform.scale_gradient(at[j]))
+        .collect();
+    let jac_for_cov = match jac_ok {
+        true => Some((jac, gradients)),
+        false => None,
+    };
+
     Ok(assemble(
         fit_model,
         params,
@@ -296,6 +340,7 @@ pub(crate) fn fit<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> Result<ModelResu
         problem.nfev.get(),
         success,
         message,
+        jac_for_cov,
     ))
 }
 
@@ -310,6 +355,7 @@ fn assemble<M: Curve>(
     nfev: usize,
     success: bool,
     message: String,
+    jac_for_cov: Option<(Vec<f64>, Vec<f64>)>,
 ) -> ModelResult<M> {
     for (p, v) in params.iter_mut().zip(&values) {
         p.value = *v;
@@ -323,14 +369,27 @@ fn assemble<M: Curve>(
         .collect();
 
     let nvarys = params.no_fix_indices().len();
-    let Statistics {
-        chisqr,
-        redchi,
-        aic,
-        bic,
-        ndata,
-        nfree,
-    } = statistics(&residual, nvarys);
+    let stats = statistics(&residual, nvarys);
+
+    // 协方差与标准误:雅可比不可得或不可信时全部为 None。
+    let covar = match &jac_for_cov {
+        Some((jac, gradients)) => covariance(jac, stats.redchi, gradients),
+        None => None,
+    };
+    let mut stderr: Vec<Option<f64>> = vec![None; params.len()];
+    match &covar {
+        Some(c) => {
+            let se = c.stderr();
+            let mut k = 0;
+            for (i, p) in params.iter().enumerate() {
+                if p.vary {
+                    stderr[i] = Some(se[k]);
+                    k += 1;
+                }
+            }
+        }
+        None => {}
+    }
 
     ModelResult {
         model,
@@ -339,13 +398,15 @@ fn assemble<M: Curve>(
         y: y.to_vec(),
         best_fit,
         residual,
-        chisqr,
-        redchi,
-        aic,
-        bic,
-        ndata,
+        stderr,
+        covar,
+        chisqr: stats.chisqr,
+        redchi: stats.redchi,
+        aic: stats.aic,
+        bic: stats.bic,
+        ndata: stats.ndata,
         nvarys,
-        nfree,
+        nfree: stats.nfree,
         nfev,
         success,
         message,

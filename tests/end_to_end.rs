@@ -409,3 +409,90 @@ fn mismatched_input_is_rejected() {
         lmfit::Error::TooFewDataPoints { ndata: 0, .. }
     ));
 }
+
+/// 全部参数固定,触发"nothing to vary"捷径路径。
+#[derive(Debug, Clone, PartialEq)]
+struct AllFixed {
+    inner: Gaussian,
+}
+
+impl ModelParams for AllFixed {
+    const MODEL_NAME: &'static str = "all_fixed";
+    const NPARAMS: usize = Gaussian::NPARAMS;
+
+    fn specs(&self) -> Vec<ParamSpec> {
+        let mut specs = self.inner.specs();
+        for spec in &mut specs {
+            spec.vary = false;
+        }
+        specs
+    }
+    fn get(&self, index: usize) -> f64 {
+        self.inner.get(index)
+    }
+    fn set(&mut self, index: usize, value: f64) {
+        self.inner.set(index, value);
+    }
+    fn at_values(&self, values: &[f64]) -> Self {
+        Self {
+            inner: self.inner.at_values(values),
+        }
+    }
+}
+
+impl Curve for AllFixed {
+    fn eval(&self, x: f64) -> f64 {
+        self.inner.eval(x)
+    }
+}
+
+#[test]
+fn stderr_is_some_for_varied_and_none_for_fixed() {
+    let (x, y) = data(101, 0.0, 5.0, 5.0, 2.0);
+    let model = FixedAmp {
+        inner: Gaussian::new(1.0, 4.0, 1.5),
+    };
+    let result = match model.fit(&y, &x) {
+        Ok(r) => r,
+        Err(e) => panic!("fit failed: {e}"),
+    };
+    assert_eq!(result.stderr.len(), 3);
+    assert!(result.stderr[0].is_none(), "固定参数应为 None");
+    match result.stderr[1] {
+        Some(s) => assert!(s > 0.0),
+        None => panic!("变参数应有 stderr"),
+    }
+    match result.stderr[2] {
+        Some(s) => assert!(s > 0.0),
+        None => panic!("变参数应有 stderr"),
+    }
+    match &result.covar {
+        Some(c) => assert_eq!(c.matrix.len(), 4), // nvarys = 2
+        None => panic!("应有协方差"),
+    }
+}
+
+#[test]
+fn nothing_to_vary_reports_no_stderr() {
+    let (x, y) = data(101, 0.0, 5.0, 5.0, 2.0);
+    let model = AllFixed {
+        inner: Gaussian::new(5.0, 5.0, 2.0),
+    };
+    let result = match model.fit(&y, &x) {
+        Ok(r) => r,
+        Err(e) => panic!("fit failed: {e}"),
+    };
+    assert!(result.success);
+    assert_eq!(result.nfev, 0);
+    assert!(result.stderr.iter().all(|s| s.is_none()));
+    assert!(result.covar.is_none());
+}
+
+/// nfev 记账:后置雅可比恰好消耗 nvarys 次探测(base 命中求解器末次缓存,
+/// 零额外求值)。无噪确定数据下总数为固定值,移除后置探测会使此数减 nvarys。
+#[test]
+fn nfev_includes_the_final_jacobian_probes() {
+    let (x, y) = data(101, 0.0, 5.0, 5.0, 2.0);
+    let result = start().fit(&y, &x).expect("fit ran");
+    assert_eq!(result.nfev, 33, "33 = 30(求解器)+ 3(后置探测)");
+}

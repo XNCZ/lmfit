@@ -28,6 +28,11 @@ pub struct ModelResult<M> {
     /// `y - best_fit`, one entry per data point.
     pub residual: Vec<f64>,
 
+    /// 每个参数的标准误,插入序;固定参数或协方差不可得时为 None。
+    pub stderr: Vec<Option<f64>>,
+    /// 变参数协方差(外部空间),不可得时为 None。
+    pub covar: Option<crate::numerics::Covariance>,
+
     /// Sum of squared residuals.
     pub chisqr: f64,
     /// Reduced chi-square, `chisqr / nfree`.

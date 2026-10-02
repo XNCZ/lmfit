@@ -88,6 +88,7 @@ impl<M: ModelParams> ModelResult<M> {
         self.write_model(&mut out);
         self.write_statistics(&mut out);
         self.write_variables(&mut out);
+        self.write_correlations(&mut out);
         out
     }
 
@@ -131,23 +132,62 @@ impl<M: ModelParams> ModelResult<M> {
         }
         let width = params.iter().map(|p| p.name.len()).max().unwrap_or(0);
 
+        // value 与 stderr 两列各自按实测最宽对齐,使 (init/(fixed 标记同列。
+        let value_strs: Vec<String> = params.iter().map(|p| gformat(p.value)).collect();
+        let se_strs: Vec<String> = self
+            .stderr
+            .iter()
+            .zip(params.iter())
+            .map(|(se, p)| match (se, p.vary) {
+                (Some(s), true) => format!("+/- {}", gformat(*s)),
+                (None, true) | (_, false) => String::new(),
+            })
+            .collect();
+        let value_width = value_strs.iter().map(|s| s.len()).max().unwrap_or(0);
+        let se_width = se_strs.iter().map(|s| s.len()).max().unwrap_or(0);
+
         out.push_str("[[Variables]]\n");
-        for p in params {
+        for (i, p) in params.iter().enumerate() {
             out.push_str("    ");
             out.push_str(&p.name);
             out.push(':');
             out.push_str(&" ".repeat(width - p.name.len()));
             out.push(' ');
-            out.push_str(&gformat(p.value));
-
+            out.push_str(&" ".repeat(value_width - value_strs[i].len()));
+            out.push_str(&value_strs[i]);
+            out.push(' ');
+            out.push_str(&se_strs[i]);
+            out.push_str(&" ".repeat(se_width - se_strs[i].len()));
+            out.push(' ');
             if p.vary {
-                out.push_str(" (init = ");
+                out.push_str("(init = ");
                 out.push_str(&gformat(p.init));
                 out.push(')');
             } else {
-                out.push_str(" (fixed)");
+                out.push_str("(fixed)");
             }
             out.push('\n');
+        }
+    }
+
+    fn write_correlations(&self, out: &mut String) {
+        let covar = match &self.covar {
+            Some(c) => c,
+            None => return,
+        };
+        let names: Vec<&str> = self
+            .params
+            .iter()
+            .filter(|p| p.vary)
+            .map(|p| p.name.as_str())
+            .collect();
+        let pairs = covar.correl();
+        if pairs.is_empty() {
+            return;
+        }
+        out.push_str("[[Correlations]] (unreported correlations are < 0.100)\n");
+        for (i, j, c) in pairs {
+            out.push_str(&format!("    C({}, {}) = {}\n", names[i], names[j], gformat(c)));
         }
     }
 }

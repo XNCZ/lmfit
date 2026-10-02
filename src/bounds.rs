@@ -111,6 +111,21 @@ impl Transform {
         }
     }
 
+    /// 内部值 `b` 处的外部参数对内部参数的导数绝对值因子,转录 lmfit 发布版
+    /// (1.3.4)`Parameter.scale_gradient` 的逐分支公式与符号约定。
+    ///
+    /// * `b` —— 内部无界值。
+    ///
+    /// 返回:协方差从内部空间换算到外部空间时逐元素相乘的梯度因子。
+    pub fn scale_gradient(&self, b: f64) -> f64 {
+        match *self {
+            Self::Free => 1.0,
+            Self::Lower(_min) => b / (b * b + 1.0).sqrt(),
+            Self::Upper(_max) => -b / (b * b + 1.0).sqrt(),
+            Self::Both(min, max) => b.cos() * (max - min) / 2.0,
+        }
+    }
+
     /// Clamp a value into the bounds, leaving unbounded parameters untouched.
     pub fn clamp(&self, value: f64) -> f64 {
         match *self {
@@ -339,5 +354,25 @@ mod tests {
                 assert_eq!(t.clamp(v), v, "{t:?} escaped its bounds with {v}");
             }
         }
+    }
+
+    /// 与 lmfit 发布版(1.3.4)parameter.py 的 scale_gradient 逐分支对照,含符号约定。
+    #[test]
+    fn scale_gradient_matches_lmfit_reference() {
+        assert_eq!(Transform::Free.scale_gradient(3.0), 1.0);
+        // Lower: +b / sqrt(b^2 + 1) —— 1.3.4 约定,符号为正。
+        assert!((Transform::Lower(0.0).scale_gradient(3.0) - 3.0 / 10.0_f64.sqrt()).abs() < 1e-12);
+        // Upper: -b / sqrt(b^2 + 1) —— 1.3.4 约定,符号为负。
+        assert!((Transform::Upper(10.0).scale_gradient(3.0) + 3.0 / 10.0_f64.sqrt()).abs() < 1e-12);
+        // Both: cos(b) * (max - min) / 2。
+        assert!((Transform::Both(0.0, 10.0).scale_gradient(0.0) - 5.0).abs() < 1e-12);
+        assert!(Transform::Both(0.0, 10.0).scale_gradient(std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    }
+
+    /// 界上内部值为 0,梯度因子为 0 —— stderr 在界上自然归零,无需特判。
+    #[test]
+    fn scale_gradient_vanishes_at_the_bound() {
+        assert_eq!(Transform::Lower(2.5).scale_gradient(0.0), 0.0);
+        assert_eq!(Transform::Upper(-3.0).scale_gradient(0.0), 0.0);
     }
 }
