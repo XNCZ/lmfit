@@ -70,7 +70,7 @@ fn equals_columns(block: &str) -> Vec<usize> {
 
 #[test]
 fn report_has_the_expected_sections_in_order() {
-    let report = fit_gaussian().fit_report();
+    let report = fit_gaussian().to_string();
 
     let model = report.find("[[Model]]").expect("model section");
     let stats = report
@@ -86,7 +86,7 @@ fn report_has_the_expected_sections_in_order() {
 
 #[test]
 fn statistics_labels_line_up() {
-    let report = fit_gaussian().fit_report();
+    let report = fit_gaussian().to_string();
     let block: String = report
         .lines()
         .skip_while(|l| !l.starts_with("[[Fit Statistics]]"))
@@ -95,7 +95,7 @@ fn statistics_labels_line_up() {
         .join("\n");
 
     let columns = equals_columns(&block);
-    assert_eq!(columns.len(), 8, "expected eight statistic rows");
+    assert_eq!(columns.len(), 9, "expected nine statistic rows");
     assert!(
         columns.windows(2).all(|w| w[0] == w[1]),
         "equals signs are not aligned: {columns:?}"
@@ -107,7 +107,7 @@ fn statistics_labels_line_up() {
 fn variable_values_line_up_whatever_the_name_length() {
     let x = vec![0.0, 1.0, 2.0, 3.0, 4.0];
     let y = vec![3.0, 3.0, 3.0, 3.0, 3.0];
-    let report = Wide::default().fit(&y, &x).expect("fit ran").fit_report();
+    let report = Wide::default().fit(&y, &x).expect("fit ran").to_string();
 
     let lines: Vec<&str> = report
         .lines()
@@ -131,7 +131,7 @@ fn variable_values_line_up_whatever_the_name_length() {
 #[test]
 fn variables_show_the_fitted_value_and_the_starting_point() {
     let result = fit_gaussian();
-    let report = result.fit_report();
+    let report = result.to_string();
 
     for name in ["amp", "cen", "wid"] {
         let line = report
@@ -158,7 +158,7 @@ fn fixed_parameters_are_marked() {
         .map(|&t| 5.0 * (-(t - 5.0f64).powi(2) / 2.0).exp())
         .collect();
 
-    let report = Pinned::default().fit(&y, &x).expect("fit ran").fit_report();
+    let report = Pinned::default().fit(&y, &x).expect("fit ran").to_string();
 
     let amp_line = report
         .lines()
@@ -177,7 +177,7 @@ fn fixed_parameters_are_marked() {
 /// models are distinguishable at a glance.
 #[test]
 fn model_line_carries_the_model_name() {
-    let report = fit_gaussian().fit_report();
+    let report = fit_gaussian().to_string();
     assert!(
         report.contains("[[Model]]\n    gaussian"),
         "model name missing from\n{report}"
@@ -196,7 +196,7 @@ fn trim(v: &f64) -> String {
 /// stderr 出现在变量行;固定参数仍显示 (fixed),无 +/-。
 #[test]
 fn variables_show_stderr_when_present() {
-    let report = fit_gaussian().fit_report();
+    let report = fit_gaussian().to_string();
     let amp_line = match report
         .lines()
         .find(|l| l.trim_start().starts_with("amp:"))
@@ -246,7 +246,7 @@ fn correlations_block_lists_qualified_pairs() {
         Ok(r) => r,
         Err(e) => panic!("fit failed: {e}"),
     };
-    let report = result.fit_report();
+    let report = result.to_string();
     assert!(
         report.contains("[[Correlations]] (unreported correlations are < 0.100)"),
         "{report}"
@@ -254,5 +254,97 @@ fn correlations_block_lists_qualified_pairs() {
     assert!(
         report.contains("C(amplitude, sigma)") || report.contains("C(sigma, amplitude)"),
         "{report}"
+    );
+
+    // `C(a, b)` 按最长标签补齐,`=` 与报表其余两块一样成列。
+    let block: String = report
+        .lines()
+        .skip_while(|l| !l.starts_with("[[Correlations]]"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let columns = equals_columns(&block);
+    assert!(
+        columns.len() >= 2,
+        "need at least two reported pairs to test alignment:\n{report}"
+    );
+    assert!(
+        columns.windows(2).all(|w| w[0] == w[1]),
+        "correlation equals signs are not aligned: {columns:?}\n{report}"
+    );
+}
+
+/// 统计块的 `=` 列必须对齐,取某段块内所有 ` = ` 的列号。
+fn block_equals(report: &str) -> Vec<usize> {
+    let block: String = report
+        .lines()
+        .skip_while(|l| !l.starts_with("[[Fit Statistics]]"))
+        .take_while(|l| !l.starts_with("[[Variables]]"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    equals_columns(&block)
+}
+
+/// 收敛的拟合:`state` 为 success,且不带 `reason` 行。
+#[test]
+fn successful_fit_reports_state_without_reason() {
+    let report = fit_gaussian().to_string();
+    let state = match report.lines().find(|l| l.trim_start().starts_with("state")) {
+        Some(line) => line,
+        None => panic!("no state line in\n{report}"),
+    };
+    assert!(state.trim_end().ends_with("= success"), "{state}");
+    assert!(
+        !report.lines().any(|l| l.trim_start().starts_with("reason")),
+        "successful fit must not carry a reason line:\n{report}"
+    );
+}
+
+/// 残差出现非有限值的模型:拟合以失败收场(而非 Err)。
+#[derive(Model, Debug)]
+struct Exploding {
+    #[param(value = 1.0)]
+    slope: f64,
+}
+
+impl Curve for Exploding {
+    fn eval(&self, x: f64) -> f64 {
+        if x > 5.0 {
+            f64::NAN
+        } else {
+            self.slope * x
+        }
+    }
+}
+
+/// 失败的拟合:`state` 为 failure,紧跟一行 `reason`,且对齐不被长文本破坏。
+#[test]
+fn failed_fit_reports_state_and_reason() {
+    let x: Vec<f64> = (0..11).map(|i| i as f64).collect();
+    let y: Vec<f64> = x.iter().map(|&t| t).collect();
+    let result = Exploding::default().fit(&y, &x).expect("fit returns a result");
+    assert!(!result.success, "a NaN residual cannot converge");
+
+    let report = result.to_string();
+    let lines: Vec<&str> = report.lines().collect();
+    let idx = match lines.iter().position(|l| l.trim_start().starts_with("state")) {
+        Some(i) => i,
+        None => panic!("no state line in\n{report}"),
+    };
+    assert!(
+        lines[idx].trim_end().ends_with("= failure"),
+        "{}",
+        lines[idx]
+    );
+    assert!(
+        lines[idx + 1].trim_start().starts_with("reason"),
+        "reason must follow state:\n{report}"
+    );
+    assert!(lines[idx + 1].contains("non-finite"), "{}", lines[idx + 1]);
+
+    let columns = block_equals(&report);
+    assert_eq!(columns.len(), 10, "expected ten rows when a reason is present");
+    assert!(
+        columns.windows(2).all(|w| w[0] == w[1]),
+        "equals signs are not aligned: {columns:?}"
     );
 }

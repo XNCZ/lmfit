@@ -81,7 +81,7 @@ pub mod error;
 pub mod lineshapes;
 pub mod numerics;
 pub mod parameter;
-pub mod report;
+pub mod render;
 pub mod result;
 pub mod solver;
 pub mod traits;

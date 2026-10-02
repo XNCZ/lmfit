@@ -38,7 +38,7 @@ fn main() -> Result<(), lmfit::Error> {
     assert!((result.model.cen - 5.0).abs() < 1e-6);
     assert!((result.model.wid - 2.0).abs() < 1e-6);
 
-    println!("{}", result.fit_report());
+    println!("{result}");
     Ok(())
 }
 ```
@@ -161,7 +161,7 @@ fn main() -> Result<(), lmfit::Error> {
     println!("chi-square = {}, reduced = {}", result.chisqr, result.redchi);
     println!("converged: {} ({})", result.success, result.message);
 
-    println!("{}", result.fit_report());
+    println!("{result}");
     Ok(())
 }
 ```
@@ -225,15 +225,13 @@ one, and neither knows about the other.
 | `solver` | the LM adapter; the only module that knows the solver exists |
 | `numerics` | finite-difference Jacobian |
 | `result` | `ModelResult` and the fit statistics |
-| `report` | `fit_report()` formatting |
+| `render` | the `Display` fit report |
 | `lineshapes` | ready-made line shapes as plain functions |
 
 ## Status
 
 Not yet implemented, in rough order of how much they are missed:
 
-- `+/- stderr` and `[[Correlations]]` in the report — both need a covariance
-  matrix, which is not computed yet.
 - Parameter expressions (lmfit's `expr=`), and `guess()`-style heuristics for
   picking starting values.
 - Solvers other than `leastsq`, and global or derivative-free methods.

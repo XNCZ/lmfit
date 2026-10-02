@@ -58,7 +58,7 @@ fn main() -> Result<(), Error> {
 
     let result = model.fit(&y, &x)?;
 
-    println!("{}", result.fit_report());
+    println!("{result}");
 
     println!();
     println!("true:  area={area}  centre={center}  sigma={sigma}  background={background}");

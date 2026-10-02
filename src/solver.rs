@@ -185,6 +185,9 @@ pub(crate) struct LmProblem<'a, M, D, X> {
     /// 解析雅可比组装器;由实数/复数入口在构造时注入,None 表示恒走有限差分。
     analytic: Option<AnalyticAssembler<M, D, X>>,
     /// debug 期一次性自检标记(解析偏导与有限差分对拍)。
+    ///
+    /// 仅自检读取:release 下该字段整体不存在,免得留一个只写不读的字段。
+    #[cfg(debug_assertions)]
     deriv_check: Cell<bool>,
     /// Residual evaluations performed, finite-difference probes included.
     nfev: Cell<usize>,
@@ -209,6 +212,7 @@ impl<'a, M: ModelParams, D: ResidualSrc<M, X>, X> LmProblem<'a, M, D, X> {
             varying,
             cache: RefCell::new(Cache::default()),
             analytic,
+            #[cfg(debug_assertions)]
             deriv_check: Cell::new(false),
             nfev: Cell::new(0),
             nonfinite_at: Cell::new(None),
