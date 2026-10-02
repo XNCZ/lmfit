@@ -173,6 +173,39 @@ Note that `gaussian`'s `amplitude` is the **area** under the curve, not the
 peak height — that is lmfit's convention and the opposite of the
 `amp * exp(..)` form most people write from memory.
 
+## Analytic derivatives
+
+A model can hand the solver exact partial derivatives instead of leaving them
+to finite differences. Write `partials_at` next to `eval`, returning the
+`{Model}Partials` bundle that `#[derive(Model)]` generates (fields named after
+the model's own):
+
+```rust
+use lmfit::{Curve, Model, PartialValues};
+
+impl Curve for Gaussian {
+    fn eval(&self, x: f64) -> f64 {
+        self.amp * (-(x - self.cen).powi(2) / self.wid).exp()
+    }
+
+    fn partials_at(&self, x: f64) -> Option<impl PartialValues<Scalar = f64>> {
+        let d = x - self.cen;
+        let e = (-d * d / self.wid).exp();
+        Some(GaussianPartials {
+            amp: e,                                             // ∂f/∂amp
+            cen: 2.0 * self.amp * e * d / self.wid,             // ∂f/∂cen
+            wid: self.amp * e * d * d / (self.wid * self.wid),  // ∂f/∂wid
+        })
+    }
+}
+```
+
+Omitting the method keeps a fit on finite differences, unchanged. With it, the
+solver spends no residual evaluations on Jacobian probes — the same fit needs
+far fewer. In debug builds the given derivatives are cross-checked against
+finite differences once per fit, so a mistyped formula fails loudly instead of
+quietly biasing the fit.
+
 ## Implementation
 
 The solver is [Levenberg-Marquardt](https://crates.io/crates/levenberg-marquardt),

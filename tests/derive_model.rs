@@ -5,7 +5,7 @@
 //! it produces a model indistinguishable from one written out by hand, so the
 //! two are fitted to identical data and every observable is compared.
 
-use lmfit::{Curve, Model, ModelParams, ParamSpec};
+use lmfit::{Complex64, Curve, Model, ModelParams, ParamSpec, PartialValues};
 
 // ---------------------------------------------------------------------------
 // A model written by hand, as the reference.
@@ -400,4 +400,30 @@ fn line_shapes_fit_a_sum_of_curves() {
     // Parameter names are the field names, no prefixes anywhere.
     assert!(result.params.get("amplitude").is_some());
     assert!(result.params.get("background").is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Derived partials: the `{Model}Partials` companion type.
+// ---------------------------------------------------------------------------
+
+/// 宏为每个模型生成的偏导包:字段与模型同名、`get` 按声明序读取;
+/// 同一泛型结构体以 `f64` 承载实值偏导、以 `Complex64` 承载复值偏导。
+#[test]
+fn derived_partials_carry_the_fields_by_name() {
+    let d = DerivedGaussianPartials {
+        amp: 1.0,
+        cen: 2.0,
+        wid: 3.0,
+    };
+    assert_eq!(d.len(), 3);
+    assert_eq!(d.get(0), 1.0);
+    assert_eq!(d.get(1), 2.0);
+    assert_eq!(d.get(2), 3.0);
+
+    let c = DerivedGaussianPartials::<Complex64> {
+        amp: Complex64::new(1.0, 5.0),
+        cen: Complex64::new(2.0, 6.0),
+        wid: Complex64::new(3.0, 7.0),
+    };
+    assert_eq!(c.get(2), Complex64::new(3.0, 7.0));
 }

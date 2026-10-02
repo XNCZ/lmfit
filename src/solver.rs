@@ -30,7 +30,7 @@ use crate::error::{Error, Result};
 use crate::numerics::{Covariance, covariance, forward_diff_jacobian};
 use crate::parameter::Parameters;
 use crate::result::{ComplexResult, ModelResult, Statistics, statistics};
-use crate::traits::{ComplexCurve, Curve, ModelParams};
+use crate::traits::{ComplexCurve, Curve, ModelParams, PartialValues};
 
 /// scipy's `leastsq` default for `ftol` and `xtol`, which lmfit inherits.
 ///
@@ -43,6 +43,23 @@ const TOL: f64 = 1.49012e-8;
 /// lmfit's budget is `max_nfev = 2000 * (nvarys + 1)` and the solver's is
 /// `patience * (n + 1)`, so the two coincide here.
 const PATIENCE: usize = 2000;
+
+/// 解析雅可比组装的结果。
+pub(crate) enum Analytic {
+    /// 模型未提供(缺省,或中途拒供):整张雅可比退回有限差分。
+    Default,
+    /// 已按列主序完整写入,可直接使用。
+    Available,
+    /// 偏导含非有限值:与有限差分的非有限语义一致,判雅可比失败。
+    NonFinite,
+}
+
+/// 解析组装器的函数指针形态:实数/复数入口各自注入。
+///
+/// 用注入而非双 trait 实现,是因为同时实现 `Curve` 与 `ComplexCurve` 的模型
+/// 会让两个实现重叠(E0119)——组装方式在入口按数据选择,绕开一致性检查。
+pub(crate) type AnalyticAssembler<M, D, X> =
+    for<'p> fn(&LmProblem<'p, M, D, X>, &[f64], &mut [f64]) -> Analytic;
 
 /// One parameter the solver is allowed to move.
 struct Varying {
@@ -165,6 +182,10 @@ pub(crate) struct LmProblem<'a, M, D, X> {
     data: D,
     varying: Vec<Varying>,
     cache: RefCell<Cache>,
+    /// 解析雅可比组装器;由实数/复数入口在构造时注入,None 表示恒走有限差分。
+    analytic: Option<AnalyticAssembler<M, D, X>>,
+    /// debug 期一次性自检标记(解析偏导与有限差分对拍)。
+    deriv_check: Cell<bool>,
     /// Residual evaluations performed, finite-difference probes included.
     nfev: Cell<usize>,
     /// First data point whose residual came out non-finite, if any. Preserved
@@ -174,13 +195,21 @@ pub(crate) struct LmProblem<'a, M, D, X> {
 }
 
 impl<'a, M: ModelParams, D: ResidualSrc<M, X>, X> LmProblem<'a, M, D, X> {
-    fn new(model: M, x: &'a [X], data: D, varying: Vec<Varying>) -> Self {
+    fn new(
+        model: M,
+        x: &'a [X],
+        data: D,
+        varying: Vec<Varying>,
+        analytic: Option<AnalyticAssembler<M, D, X>>,
+    ) -> Self {
         Self {
             model,
             x,
             data,
             varying,
             cache: RefCell::new(Cache::default()),
+            analytic,
+            deriv_check: Cell::new(false),
             nfev: Cell::new(0),
             nonfinite_at: Cell::new(None),
         }
@@ -193,6 +222,85 @@ impl<'a, M: ModelParams, D: ResidualSrc<M, X>, X> LmProblem<'a, M, D, X> {
             .map(|v| v.transform.to_internal(self.model.get(v.index)))
             .collect()
     }
+
+    /// 尝试解析组装雅可比。
+    ///
+    /// * `at` —— 内部空间点(模型的当前参数);`out` —— 列主序雅可比缓冲。
+    ///
+    /// 返回:组装结果;未注入组装器时为 `NotProvided`。
+    fn analytic_jacob(&self, at: &[f64], out: &mut [f64]) -> Analytic {
+        match self.analytic {
+            Some(assemble) => assemble(self, at, out),
+            None => Analytic::Default,
+        }
+    }
+
+    /// debug 期一次性自检:把解析偏导与同点有限差分对拍,不符即断言失败。
+    ///
+    /// 自检使用独立计数器,不触碰 `nfev`/`nonfinite_at` 的对外语义。
+    ///
+    /// * `at` —— 内部空间点;`analytic` —— 已组装的解析雅可比(列主序)。
+    ///
+    /// 返回:无;仅诊断用途。
+    #[cfg(debug_assertions)]
+    fn check_partials_once(&self, at: &[f64], analytic: &[f64]) {
+        if self.deriv_check.replace(true) {
+            return;
+        }
+        let nrows = analytic.len() / self.varying.len().max(1);
+        let scratch_nfev = Cell::new(0);
+        let scratch_nonfinite = Cell::new(None);
+        let mut base = vec![0.0; nrows];
+        if !self.data.override_residuals(
+            &self.model,
+            self.x,
+            &scratch_nfev,
+            &scratch_nonfinite,
+            &mut base,
+        ) {
+            // 残差本身不可用:交给既有语义处理,自检不额外报错。
+            return;
+        }
+        let mut fd = vec![0.0; analytic.len()];
+        let mut full: Vec<f64> = (0..M::NPARAMS).map(|i| self.model.get(i)).collect();
+        let ok = forward_diff_jacobian(
+            at,
+            &base,
+            |probe, buf| {
+                for (j, v) in self.varying.iter().enumerate() {
+                    full[v.index] = v.transform.from_internal(probe[j]);
+                }
+                let perturbed = self.model.at_values(&full);
+                self.data.override_residuals(
+                    &perturbed,
+                    self.x,
+                    &scratch_nfev,
+                    &scratch_nonfinite,
+                    buf,
+                )
+            },
+            &mut fd,
+        );
+        if !ok {
+            // 差分本身不可信:不误报。
+            return;
+        }
+        for (k, (a, f)) in analytic.iter().zip(&fd).enumerate() {
+            let tol = 1e-3 * (1.0 + a.abs() + f.abs());
+            debug_assert!(
+                (a - f).abs() <= tol,
+                "解析偏导与有限差分不符:index={k}, analytic={a}, fd={f}"
+            );
+        }
+    }
+
+    /// release 下的空自检:保持调用点无条件。
+    ///
+    /// * `_at` —— 内部空间点;`_analytic` —— 解析雅可比。
+    ///
+    /// 返回:无。
+    #[cfg(not(debug_assertions))]
+    fn check_partials_once(&self, _at: &[f64], _analytic: &[f64]) {}
 
     /// Residuals at the model's current values, recomputing only if the cache
     /// does not already hold them for `at`.
@@ -247,11 +355,22 @@ impl<M: ModelParams, D: ResidualSrc<M, X>, X> LeastSquaresProblem<f64, Dyn, Dyn>
 
     fn jacobian(&self) -> Option<Matrix<f64, Dyn, Dyn, Self::JacobianStorage>> {
         let at = self.internal_params();
-        let base = self.residuals_cache(&at)?;
-
-        let nrows = base.len();
+        let nrows = self.data.nslots();
         let ncols = self.varying.len();
         let mut out = vec![0.0; nrows * ncols];
+
+        // 解析优先:模型提供并可组装时,不产生任何残差求值。
+        match self.analytic_jacob(&at, &mut out) {
+            Analytic::Available => {
+                self.check_partials_once(&at, &out);
+                return Some(DMatrix::from_vec(nrows, ncols, out));
+            }
+            Analytic::NonFinite => return None,
+            Analytic::Default => {}
+        }
+
+        let base = self.residuals_cache(&at)?;
+        debug_assert_eq!(base.len(), nrows);
 
         // The model's full parameter vector, varying entries overwritten per
         // probe. Writing every varying entry from `probe` on each call also
@@ -289,6 +408,81 @@ impl<M: ModelParams, D: ResidualSrc<M, X>, X> LeastSquaresProblem<f64, Dyn, Dyn>
     }
 }
 
+/// 实数解析组装:内部空间列 j、数据点 i 处为 `−∂f/∂θⱼ · scale_gradient(bⱼ)`。
+///
+/// * `this` —— 问题(模型已在当前参数处);`at` —— 内部空间点;
+///   `out` —— 列主序雅可比缓冲(m×n)。
+///
+/// 返回:组装结果;任一点拒供即 `NotProvided`,任一偏导非有限即 `Failed`。
+fn assemble_analytic_real<M: Curve, D: ResidualSrc<M, f64>>(
+    this: &LmProblem<'_, M, D, f64>,
+    at: &[f64],
+    out: &mut [f64],
+) -> Analytic {
+    let m = this.data.npoints();
+    // 各列的换算因子对整张雅可比不变:循环外一次算出。
+    let scale: Vec<f64> = this
+        .varying
+        .iter()
+        .enumerate()
+        .map(|(j, v)| v.transform.scale_gradient(at[j]))
+        .collect();
+    for i in 0..m {
+        let p = match this.model.partials_at(this.x[i]) {
+            Some(p) => p,
+            None => return Analytic::Default,
+        };
+        debug_assert_eq!(p.len(), M::NPARAMS, "PartialValues::len 与 NPARAMS 不符");
+        for (j, v) in this.varying.iter().enumerate() {
+            let d = p.get(v.index);
+            if !d.is_finite() {
+                return Analytic::NonFinite;
+            }
+            out[j * m + i] = -d * scale[j];
+        }
+    }
+    Analytic::Available
+}
+
+/// 复数解析组装:每个数据点的复数偏导按实部、虚部交错写入两行
+/// (与 [`ResidualSrc`] 的 `[re, im]` 槽位同序)。
+///
+/// * `this` —— 问题(模型已在当前参数处);`at` —— 内部空间点;
+///   `out` —— 列主序雅可比缓冲(2m×n)。
+///
+/// 返回:组装结果;任一点拒供即 `NotProvided`,任一偏导非有限即 `Failed`。
+fn assemble_analytic_complex<M: ComplexCurve, D: ResidualSrc<M, X>, X: Copy + Into<Complex64>>(
+    this: &LmProblem<'_, M, D, X>,
+    at: &[f64],
+    out: &mut [f64],
+) -> Analytic {
+    let m = this.data.npoints();
+    let rows = this.data.nslots();
+    // 各列的换算因子对整张雅可比不变:循环外一次算出。
+    let scale: Vec<f64> = this
+        .varying
+        .iter()
+        .enumerate()
+        .map(|(j, v)| v.transform.scale_gradient(at[j]))
+        .collect();
+    for i in 0..m {
+        let p = match this.model.partials_at(this.x[i].into()) {
+            Some(p) => p,
+            None => return Analytic::Default,
+        };
+        debug_assert_eq!(p.len(), M::NPARAMS, "PartialValues::len 与 NPARAMS 不符");
+        for (j, v) in this.varying.iter().enumerate() {
+            let d = p.get(v.index) * (-scale[j]);
+            if !d.re.is_finite() || !d.im.is_finite() {
+                return Analytic::NonFinite;
+            }
+            out[j * rows + 2 * i] = d.re;
+            out[j * rows + 2 * i + 1] = d.im;
+        }
+    }
+    Analytic::Available
+}
+
 /// 拟合过程中收敛出的共享结果(实数域),供实数/复数两条装配壳使用。
 pub(crate) struct Solution<M> {
     model: M,
@@ -305,7 +499,12 @@ pub(crate) struct Solution<M> {
 /// * `model` —— 起点模型;`data` —— 观测(实数或复数);`x` —— 自变量。
 ///
 /// 返回:收敛点的共享结果;长度不符或数据为空时报错。
-pub(crate) fn fit_core<M: ModelParams, D, X>(model: &M, data: D, x: &[X]) -> Result<Solution<M>>
+pub(crate) fn fit_core<M: ModelParams, D, X>(
+    model: &M,
+    data: D,
+    x: &[X],
+    analytic: Option<AnalyticAssembler<M, D, X>>,
+) -> Result<Solution<M>>
 where
     D: ResidualSrc<M, X>,
 {
@@ -356,7 +555,7 @@ where
         });
     }
 
-    let problem = LmProblem::new(working, x, data, varying);
+    let problem = LmProblem::new(working, x, data, varying, analytic);
 
     let (problem, report) = LevenbergMarquardt::<f64>::new()
         .with_tol(TOL)
@@ -380,26 +579,31 @@ where
     let mut jac = vec![0.0; base.len() * ncols];
     let jac_ok = base.len() > 0
         && ncols > 0
-        && {
-            let mut full: Vec<f64> = (0..M::NPARAMS).map(|i| problem.model.get(i)).collect();
-            forward_diff_jacobian(
-                &at,
-                &base,
-                |probe, buf| {
-                    for (j, v) in problem.varying.iter().enumerate() {
-                        full[v.index] = v.transform.from_internal(probe[j]);
-                    }
-                    let perturbed = problem.model.at_values(&full);
-                    problem.data.override_residuals(
-                        &perturbed,
-                        problem.x,
-                        &problem.nfev,
-                        &problem.nonfinite_at,
-                        buf,
-                    )
-                },
-                &mut jac,
-            )
+        && match problem.analytic_jacob(&at, &mut jac) {
+            // 解析优先:模型提供时同样不产生探测求值。
+            Analytic::Available => true,
+            Analytic::NonFinite => false,
+            Analytic::Default => {
+                let mut full: Vec<f64> = (0..M::NPARAMS).map(|i| problem.model.get(i)).collect();
+                forward_diff_jacobian(
+                    &at,
+                    &base,
+                    |probe, buf| {
+                        for (j, v) in problem.varying.iter().enumerate() {
+                            full[v.index] = v.transform.from_internal(probe[j]);
+                        }
+                        let perturbed = problem.model.at_values(&full);
+                        problem.data.override_residuals(
+                            &perturbed,
+                            problem.x,
+                            &problem.nfev,
+                            &problem.nonfinite_at,
+                            buf,
+                        )
+                    },
+                    &mut jac,
+                )
+            }
         };
     let gradients: Vec<f64> = problem
         .varying
@@ -427,7 +631,7 @@ where
 ///
 /// Split out of [`Curve::fit`] so the trait stays a thin facade.
 pub(crate) fn fit<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> Result<ModelResult<M>> {
-    let solved = fit_core(model, y, x)?;
+    let solved = fit_core(model, y, x, Some(assemble_analytic_real::<M, &[f64]>))?;
     Ok(assemble_real(solved, y, x))
 }
 
@@ -439,7 +643,7 @@ pub(crate) fn fit_complex<M: ComplexCurve, X: Copy + Into<Complex64>>(
     y: &[Complex64],
     x: &[X],
 ) -> Result<ComplexResult<M>> {
-    let solved = fit_core(model, y, x)?;
+    let solved = fit_core(model, y, x, Some(assemble_analytic_complex::<M, &[Complex64], X>))?;
     Ok(assemble_complex(solved, y, x))
 }
 

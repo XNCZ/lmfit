@@ -91,7 +91,7 @@ pub use error::{Error, Result};
 pub use num_complex::Complex64;
 pub use parameter::{Parameter, Parameters};
 pub use result::{ComplexResult, ModelResult};
-pub use traits::{ComplexCurve, Curve, ModelParams, ParamSpec};
+pub use traits::{ComplexCurve, Curve, ModelParams, NoPartials, ParamSpec, PartialValues};
 
 /// Derive the parameter plumbing for a curve model.
 ///

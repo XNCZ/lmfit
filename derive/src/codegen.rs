@@ -14,7 +14,7 @@
 //! `extern crate self as lmfit;` in the library root.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Fields, Result, spanned::Spanned};
 
 use crate::attr::{parse_model_name, parse_param, to_snake_case};
@@ -53,6 +53,15 @@ pub fn codegen(input: DeriveInput) -> Result<TokenStream> {
 
     let nparams = fields.len();
 
+    // 偏导包的伴随类型:名字加 `Partials` 后缀,可见性镜射模型本身;
+    // `#[allow(dead_code)]` 因为未覆写 `partials_at` 的私有模型不会构造它。
+    let partials_name = format_ident!("{}Partials", name);
+    let partials_doc = format!(
+        "`#[derive(Model)]` 为 `{name}` 生成的偏导包:字段与模型同名,每个字段承载该参数的一阶偏导。`T` 取 `f64`(实值模型)或 `Complex64`(复数模型)。"
+    );
+    let vis = &input.vis;
+    let field_idents: Vec<&syn::Ident> = fields.iter().map(|f| &f.ident).collect();
+
     // specs(): one entry per field, in declaration order — which is also the
     // index order `get`, `set`, and `at_values` use.
     //
@@ -79,10 +88,14 @@ pub fn codegen(input: DeriveInput) -> Result<TokenStream> {
         }
     });
 
-    let get_arms = fields.iter().enumerate().map(|(i, f)| {
-        let field = &f.ident;
-        quote!(#i => self.#field,)
-    });
+    let get_arms: Vec<TokenStream> = fields
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let field = &f.ident;
+            quote!(#i => self.#field,)
+        })
+        .collect();
 
     let set_arms = fields.iter().enumerate().map(|(i, f)| {
         let field = &f.ident;
@@ -152,6 +165,53 @@ pub fn codegen(input: DeriveInput) -> Result<TokenStream> {
             fn default() -> Self {
                 Self {
                     #(#default_fields)*
+                }
+            }
+        }
+
+        #[allow(dead_code)]
+        #[doc = #partials_doc]
+        #[derive(Debug, Clone)]
+        #vis struct #partials_name<T = f64> {
+            #(pub #field_idents: T,)*
+        }
+
+        impl ::lmfit::PartialValues for #partials_name<f64> {
+            type Scalar = f64;
+
+            fn len(&self) -> usize {
+                #nparams
+            }
+
+            fn get(&self, index: usize) -> f64 {
+                match index {
+                    #(#get_arms)*
+                    _ => ::std::panic!(
+                        "parameter index {} is out of range for model `{}`, which has {} parameters",
+                        index,
+                        #model_name,
+                        #nparams,
+                    ),
+                }
+            }
+        }
+
+        impl ::lmfit::PartialValues for #partials_name<::lmfit::Complex64> {
+            type Scalar = ::lmfit::Complex64;
+
+            fn len(&self) -> usize {
+                #nparams
+            }
+
+            fn get(&self, index: usize) -> ::lmfit::Complex64 {
+                match index {
+                    #(#get_arms)*
+                    _ => ::std::panic!(
+                        "parameter index {} is out of range for model `{}`, which has {} parameters",
+                        index,
+                        #model_name,
+                        #nparams,
+                    ),
                 }
             }
         }

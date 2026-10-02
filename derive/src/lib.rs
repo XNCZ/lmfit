@@ -45,8 +45,9 @@ use syn::{DeriveInput, parse_macro_input};
 ///
 /// # What this generates
 ///
-/// `ModelParams` and `Default`. It does **not** generate `Curve`; the
-/// arithmetic is yours to write.
+/// `ModelParams`, `Default`, and a `{Model}Partials<T>` companion struct for
+/// optional analytic derivatives. It does **not** generate `Curve`; the
+/// arithmetic — `eval`, and optionally `partials_at` — is yours to write.
 ///
 /// Because `Default` is generated, a model must not also derive `Default`.
 #[proc_macro_derive(Model, attributes(param, model))]
