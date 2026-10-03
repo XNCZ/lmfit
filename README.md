@@ -1,9 +1,15 @@
 # lmfit
 
-Arbitrary curve fitting in Rust, modelled on Python's [lmfit](https://lmfit.github.io/lmfit-py/).
+Arbitrary curve fitting in Rust.
 
 A model is a struct whose fields are its parameters, and the arithmetic is the
 one method you write. Fitted values are the model's fields, not string lookups.
+
+Models come in two kinds — real (`Curve`) and complex (`ComplexCurve`) — and the
+Jacobian comes one of two ways: differenced automatically, one probe per
+parameter, or supplied exactly through `partials_at`. Both choices are per
+model, and the examples below show each of the model kinds and both Jacobian
+routes.
 
 ```rust
 use lmfit::{Curve, Model};
@@ -173,12 +179,63 @@ Note that `gaussian`'s `amplitude` is the **area** under the curve, not the
 peak height — that is lmfit's convention and the opposite of the
 `amp * exp(..)` form most people write from memory.
 
-## Analytic derivatives
+## Complex models
 
-A model can hand the solver exact partial derivatives instead of leaving them
-to finite differences. Write `partials_at` next to `eval`, returning the
-`{Model}Partials` bundle that `#[derive(Model)]` generates (fields named after
-the model's own):
+A complex-valued model implements `ComplexCurve` instead of `Curve`: `eval`
+takes and returns `Complex64`, and the parameters stay real. Each data point
+contributes its real and imaginary part as two least-squares slots, so a fit
+over `n` complex points counts `2n` data points.
+
+```rust
+use lmfit::{Complex64, ComplexCurve, Model};
+
+#[derive(Model)]
+struct ComplexGaussian {
+    #[param(value = 5.0)]
+    amplitude: f64,
+    #[param(value = 5.0)]
+    center: f64,
+    #[param(value = 2.0, min = 0.0)]
+    sigma: f64,
+    #[param(value = 0.3)]
+    phase: f64,
+}
+
+impl ComplexCurve for ComplexGaussian {
+    fn eval(&self, x: Complex64) -> Complex64 {
+        let e = (-(x - self.center).powi(2) / (2.0 * self.sigma.powi(2))).exp();
+        e * self.amplitude * Complex64::from_polar(1.0, self.phase)
+    }
+}
+
+fn main() -> Result<(), lmfit::Error> {
+    let x: Vec<f64> = (0..101).map(|i| i as f64 / 10.0).collect();
+    let y: Vec<Complex64> = x
+        .iter()
+        .map(|&t| {
+            let g = 5.0 * (-(t - 5.0f64).powi(2) / 8.0).exp();
+            Complex64::from_polar(g, 0.3)
+        })
+        .collect();
+
+    let result =
+        ComplexGaussian { amplitude: 4.0, center: 4.0, sigma: 1.5, phase: 0.0 }.fit(&y, &x)?;
+
+    assert!((result.model.amplitude - 5.0).abs() < 1e-6);
+    assert!((result.model.phase - 0.3).abs() < 1e-6);
+
+    println!("{result}");
+    Ok(())
+}
+```
+
+## Jacobians: automatic or analytic
+
+By default the Jacobian is differenced for you — one probe per parameter, the
+way MINPACK's `fdjac2` does it, so the examples above need no derivative code
+at all. A model can instead hand the solver exact partial derivatives. Write
+`partials_at` next to `eval`, returning the `{Model}Partials` bundle that
+`#[derive(Model)]` generates (fields named after the model's own):
 
 ```rust
 use lmfit::{Curve, Model, PartialValues};
@@ -208,9 +265,10 @@ far fewer.
 
 The solver is [Levenberg-Marquardt](https://crates.io/crates/levenberg-marquardt),
 driven with scipy `leastsq`'s default tolerances and lmfit's function-evaluation
-budget, so a fit here and a fit in Python should take the same path. The
-Jacobian is differenced the way MINPACK's `fdjac2` does it, since a model is an
-arbitrary closure and there are no analytic derivatives to be had.
+budget. Unless a model supplies `partials_at`, the Jacobian is differenced the
+way MINPACK's `fdjac2` does it — the same path scipy's `leastsq` takes — so a
+fit without analytic derivatives lands where the Python implementation lands,
+and one with them skips the probes entirely.
 
 The crate is layered so the pieces can be replaced independently: the derive
 macro only ever produces a parameter *layout*, the solver only ever consumes
@@ -218,7 +276,7 @@ one, and neither knows about the other.
 
 | Module | Role |
 | --- | --- |
-| `traits` | `ModelParams` (layout) and `Curve` (arithmetic) — the seam |
+| `traits` | `ModelParams` (layout) and `Curve`/`ComplexCurve` (arithmetic) — the seam |
 | `bounds` | lmfit's bounded-parameter transform |
 | `solver` | the LM adapter; the only module that knows the solver exists |
 | `numerics` | finite-difference Jacobian |

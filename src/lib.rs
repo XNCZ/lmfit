@@ -1,7 +1,9 @@
-//! Arbitrary curve fitting in Rust, modelled on Python's `lmfit`.
+//! Arbitrary curve fitting in Rust.
 //!
 //! A model is a struct whose fields are its parameters, and the arithmetic is
-//! the one method you write:
+//! the one method you write. Models are real ([`Curve`]) or complex
+//! ([`ComplexCurve`]), and the Jacobian is differenced automatically unless the
+//! model supplies it through `partials_at`:
 //!
 //! ```
 //! use lmfit::{Curve, Model};
