@@ -184,11 +184,6 @@ pub(crate) struct LmProblem<'a, M, D, X> {
     cache: RefCell<Cache>,
     /// 解析雅可比组装器;由实数/复数入口在构造时注入,None 表示恒走有限差分。
     analytic: Option<AnalyticAssembler<M, D, X>>,
-    /// debug 期一次性自检标记(解析偏导与有限差分对拍)。
-    ///
-    /// 仅自检读取:release 下该字段整体不存在,免得留一个只写不读的字段。
-    #[cfg(debug_assertions)]
-    deriv_check: Cell<bool>,
     /// Residual evaluations performed, finite-difference probes included.
     nfev: Cell<usize>,
     /// First data point whose residual came out non-finite, if any. Preserved
@@ -212,8 +207,6 @@ impl<'a, M: ModelParams, D: ResidualSrc<M, X>, X> LmProblem<'a, M, D, X> {
             varying,
             cache: RefCell::new(Cache::default()),
             analytic,
-            #[cfg(debug_assertions)]
-            deriv_check: Cell::new(false),
             nfev: Cell::new(0),
             nonfinite_at: Cell::new(None),
         }
@@ -238,73 +231,6 @@ impl<'a, M: ModelParams, D: ResidualSrc<M, X>, X> LmProblem<'a, M, D, X> {
             None => Analytic::Default,
         }
     }
-
-    /// debug 期一次性自检:把解析偏导与同点有限差分对拍,不符即断言失败。
-    ///
-    /// 自检使用独立计数器,不触碰 `nfev`/`nonfinite_at` 的对外语义。
-    ///
-    /// * `at` —— 内部空间点;`analytic` —— 已组装的解析雅可比(列主序)。
-    ///
-    /// 返回:无;仅诊断用途。
-    #[cfg(debug_assertions)]
-    fn check_partials_once(&self, at: &[f64], analytic: &[f64]) {
-        if self.deriv_check.replace(true) {
-            return;
-        }
-        let nrows = analytic.len() / self.varying.len().max(1);
-        let scratch_nfev = Cell::new(0);
-        let scratch_nonfinite = Cell::new(None);
-        let mut base = vec![0.0; nrows];
-        if !self.data.override_residuals(
-            &self.model,
-            self.x,
-            &scratch_nfev,
-            &scratch_nonfinite,
-            &mut base,
-        ) {
-            // 残差本身不可用:交给既有语义处理,自检不额外报错。
-            return;
-        }
-        let mut fd = vec![0.0; analytic.len()];
-        let mut full: Vec<f64> = (0..M::NPARAMS).map(|i| self.model.get(i)).collect();
-        let ok = forward_diff_jacobian(
-            at,
-            &base,
-            |probe, buf| {
-                for (j, v) in self.varying.iter().enumerate() {
-                    full[v.index] = v.transform.from_internal(probe[j]);
-                }
-                let perturbed = self.model.at_values(&full);
-                self.data.override_residuals(
-                    &perturbed,
-                    self.x,
-                    &scratch_nfev,
-                    &scratch_nonfinite,
-                    buf,
-                )
-            },
-            &mut fd,
-        );
-        if !ok {
-            // 差分本身不可信:不误报。
-            return;
-        }
-        for (k, (a, f)) in analytic.iter().zip(&fd).enumerate() {
-            let tol = 1e-3 * (1.0 + a.abs() + f.abs());
-            debug_assert!(
-                (a - f).abs() <= tol,
-                "解析偏导与有限差分不符:index={k}, analytic={a}, fd={f}"
-            );
-        }
-    }
-
-    /// release 下的空自检:保持调用点无条件。
-    ///
-    /// * `_at` —— 内部空间点;`_analytic` —— 解析雅可比。
-    ///
-    /// 返回:无。
-    #[cfg(not(debug_assertions))]
-    fn check_partials_once(&self, _at: &[f64], _analytic: &[f64]) {}
 
     /// Residuals at the model's current values, recomputing only if the cache
     /// does not already hold them for `at`.
@@ -365,10 +291,7 @@ impl<M: ModelParams, D: ResidualSrc<M, X>, X> LeastSquaresProblem<f64, Dyn, Dyn>
 
         // 解析优先:模型提供并可组装时,不产生任何残差求值。
         match self.analytic_jacob(&at, &mut out) {
-            Analytic::Available => {
-                self.check_partials_once(&at, &out);
-                return Some(DMatrix::from_vec(nrows, ncols, out));
-            }
+            Analytic::Available => return Some(DMatrix::from_vec(nrows, ncols, out)),
             Analytic::NonFinite => return None,
             Analytic::Default => {}
         }

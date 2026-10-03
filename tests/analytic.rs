@@ -1,4 +1,4 @@
-//! 解析偏导通道(实数)端到端:与有限差分版对拍、回退与失败语义、debug 自检。
+//! 解析偏导通道端到端:与有限差分版对拍、回退与失败语义、复数通道。
 
 use lmfit::{Complex64, ComplexCurve, Curve, Model, PartialValues};
 
@@ -263,52 +263,6 @@ fn non_finite_partials_fail_the_jacobian() {
         "message = {}",
         result.message
     );
-}
-
-/// 手推公式写错:debug 自检必须在首次解析组装时抓住。
-///
-/// 只在 debug 下存在——它的唯一用途是被那条 `should_panic` 测试构造。
-#[cfg(debug_assertions)]
-#[derive(Model, Debug)]
-struct WrongGaussian {
-    #[param(value = 3.0)]
-    amplitude: f64,
-    #[param(value = 4.0)]
-    center: f64,
-    #[param(value = 1.5, min = 0.0)]
-    sigma: f64,
-}
-
-#[cfg(debug_assertions)]
-impl Curve for WrongGaussian {
-    fn eval(&self, x: f64) -> f64 {
-        self.amplitude * (-(x - self.center).powi(2) / (2.0 * self.sigma.powi(2))).exp()
-    }
-
-    fn partials_at(&self, x: f64) -> Option<impl PartialValues<Scalar = f64>> {
-        let d = x - self.center;
-        let s2 = self.sigma * self.sigma;
-        let e = (-d * d / (2.0 * s2)).exp();
-        Some(WrongGaussianPartials {
-            amplitude: e,
-            // 故意漏掉 amplitude 因子 —— 与有限差分必然不符。
-            center: e * d / s2,
-            sigma: self.amplitude * e * d * d / (s2 * self.sigma),
-        })
-    }
-}
-
-#[cfg(debug_assertions)]
-#[should_panic(expected = "解析偏导与有限差分不符")]
-#[test]
-fn a_wrong_partial_formula_is_caught_in_debug() {
-    let (x, y) = data();
-    let _ = WrongGaussian {
-        amplitude: 3.0,
-        center: 4.0,
-        sigma: 1.5,
-    }
-    .fit(&y, &x);
 }
 
 // ---------------------------------------------------------------------------

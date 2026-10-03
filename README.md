@@ -202,9 +202,7 @@ impl Curve for Gaussian {
 
 Omitting the method keeps a fit on finite differences, unchanged. With it, the
 solver spends no residual evaluations on Jacobian probes — the same fit needs
-far fewer. In debug builds the given derivatives are cross-checked against
-finite differences once per fit, so a mistyped formula fails loudly instead of
-quietly biasing the fit.
+far fewer.
 
 ## Implementation
 
