@@ -1,7 +1,8 @@
 //! Code generation for `#[derive(Model)]`.
 //!
 //! Given a struct whose fields are all `f64` and all carry `#[param(...)]`,
-//! this emits three things:
+//! this emits three things. 带 `#[param(derive)]` 的字段另算:它们不参与拟合,
+//! 值由与字段同名的固有方法算出,`refresh_derive` 负责把结果写回字段。
 //!
 //! 1. `impl ModelParams` — the parameter layout the solver reads.
 //! 2. `impl Default` — built from each field's `value`, so `Gaussian::default()`
@@ -19,13 +20,23 @@ use syn::{Data, DeriveInput, Fields, Result, spanned::Spanned};
 
 use crate::attr::{parse_model_name, parse_param, to_snake_case};
 
-/// One parsed field: the struct field plus its `#[param(...)]` settings.
+/// 一个字段在模型里的角色。
+enum Role {
+    /// 普通参数:起点、界与可变性都来自 `#[param(...)]`。
+    Plain {
+        value: syn::Expr,
+        min: Option<syn::Expr>,
+        max: Option<syn::Expr>,
+        vary: Option<syn::Expr>,
+    },
+    /// 派生量:不参与拟合,值由同名方法给出。
+    Derive,
+}
+
+/// One parsed field: the struct field plus its role.
 struct Field {
     ident: syn::Ident,
-    value: syn::Expr,
-    min: Option<syn::Expr>,
-    max: Option<syn::Expr>,
-    vary: Option<syn::Expr>,
+    role: Role,
 }
 
 pub fn codegen(input: DeriveInput) -> Result<TokenStream> {
@@ -53,14 +64,50 @@ pub fn codegen(input: DeriveInput) -> Result<TokenStream> {
 
     let nparams = fields.len();
 
+    // 派生字段:声明序即 `refresh_derive` 的求值序,后者可引用先者。
+    let derive_idents: Vec<&syn::Ident> = fields
+        .iter()
+        .filter_map(|f| match &f.role {
+            Role::Derive => Some(&f.ident),
+            Role::Plain { .. } => None,
+        })
+        .collect();
+    let has_derive = !derive_idents.is_empty();
+
+    // 偏导包与偏导臂只收普通字段:派生量不是自变量,没有 ∂f/∂θ。
+    let plain_idents: Vec<&syn::Ident> = fields
+        .iter()
+        .filter_map(|f| match &f.role {
+            Role::Plain { .. } => Some(&f.ident),
+            Role::Derive => None,
+        })
+        .collect();
+    let partial_arms: Vec<TokenStream> = fields
+        .iter()
+        .enumerate()
+        .filter_map(|(i, f)| match &f.role {
+            Role::Plain { .. } => {
+                let field = &f.ident;
+                Some(quote!(#i => self.#field,))
+            }
+            Role::Derive => None,
+        })
+        .collect();
+
+    // 全部字段都是派生量时,偏导包里没有字段承载类型参数 `T`;用 `PhantomData`
+    // 给它归属,否则生成的空结构体过不了 E0392。
+    let partials_marker = match plain_idents.is_empty() {
+        true => quote!(_marker: ::std::marker::PhantomData<T>,),
+        false => quote!(),
+    };
+
     // 偏导包的伴随类型:名字加 `Partials` 后缀,可见性镜射模型本身;
     // `#[allow(dead_code)]` 因为未覆写 `partials_at` 的私有模型不会构造它。
     let partials_name = format_ident!("{}Partials", name);
     let partials_doc = format!(
-        "`#[derive(Model)]` 为 `{name}` 生成的偏导包:字段与模型同名,每个字段承载该参数的一阶偏导。`T` 取 `f64`(实值模型)或 `Complex64`(复数模型)。"
+        "`#[derive(Model)]` 为 `{name}` 生成的偏导包:字段与模型同名,每个字段承载该参数的一阶偏导。派生字段没有偏导,故不在此包内。`T` 取 `f64`(实值模型)或 `Complex64`(复数模型)。"
     );
     let vis = &input.vis;
-    let field_idents: Vec<&syn::Ident> = fields.iter().map(|f| &f.ident).collect();
 
     // specs(): one entry per field, in declaration order — which is also the
     // index order `get`, `set`, and `at_values` use.
@@ -71,11 +118,24 @@ pub fn codegen(input: DeriveInput) -> Result<TokenStream> {
     let spec_entries = fields.iter().map(|f| {
         let field = &f.ident;
         let field_name = field.to_string();
-        let min = option(f.min.as_ref());
-        let max = option(f.max.as_ref());
-        let vary = match &f.vary {
-            Some(expr) => quote!(#expr),
-            None => quote!(true),
+        let (min, max, vary, derive) = match &f.role {
+            Role::Plain {
+                min, max, vary, ..
+            } => (
+                option(min.as_ref()),
+                option(max.as_ref()),
+                match vary {
+                    Some(expr) => quote!(#expr),
+                    None => quote!(true),
+                },
+                quote!(false),
+            ),
+            Role::Derive => (
+                quote!(::std::option::Option::None),
+                quote!(::std::option::Option::None),
+                quote!(false),
+                quote!(true),
+            ),
         };
         quote! {
             ::lmfit::ParamSpec {
@@ -84,6 +144,7 @@ pub fn codegen(input: DeriveInput) -> Result<TokenStream> {
                 min: #min,
                 max: #max,
                 vary: #vary,
+                derive: #derive,
             }
         }
     });
@@ -102,16 +163,74 @@ pub fn codegen(input: DeriveInput) -> Result<TokenStream> {
         quote!(#i => self.#field = value,)
     });
 
-    let value_fields = fields.iter().enumerate().map(|(i, f)| {
-        let field = &f.ident;
-        quote!(#field: values[#i],)
-    });
+    let value_fields: Vec<TokenStream> = fields
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let field = &f.ident;
+            match &f.role {
+                Role::Plain { .. } => quote!(#field: values[#i],),
+                Role::Derive => quote!(#field: ::std::f64::NAN,),
+            }
+        })
+        .collect();
 
-    let default_fields = fields.iter().map(|f| {
-        let field = &f.ident;
-        let value = &f.value;
-        quote!(#field: #value,)
-    });
+    let default_fields: Vec<TokenStream> = fields
+        .iter()
+        .map(|f| {
+            let field = &f.ident;
+            match &f.role {
+                Role::Plain { value, .. } => quote!(#field: #value,),
+                Role::Derive => quote!(#field: ::std::f64::NAN,),
+            }
+        })
+        .collect();
+
+    // 无派生字段时,生成的代码与不带本特性时逐字相同。
+    // 全限定路径:调用方不必把 `ModelParams` 导入作用域,派生模型开箱即用。
+    let set_refresh = match has_derive {
+        true => quote!(::lmfit::ModelParams::refresh_derive(self);),
+        false => quote!(),
+    };
+    let at_values_body = match has_derive {
+        true => quote! {
+            let mut out = Self {
+                #(#value_fields)*
+            };
+            ::lmfit::ModelParams::refresh_derive(&mut out);
+            out
+        },
+        false => quote! {
+            Self {
+                #(#value_fields)*
+            }
+        },
+    };
+    let default_body = match has_derive {
+        true => quote! {
+            let mut out = Self {
+                #(#default_fields)*
+            };
+            ::lmfit::ModelParams::refresh_derive(&mut out);
+            out
+        },
+        false => quote! {
+            Self {
+                #(#default_fields)*
+            }
+        },
+    };
+    // 派生字段的占位值取 NaN:公式若引用了后声明的派生字段,得 NaN 而不是
+    // 静默的 0,报表与残差都会把它显出来。
+    let refresh_impl = match has_derive {
+        true => quote! {
+            /// 由同名方法重算全部派生字段,声明序即求值序。
+            fn refresh_derive(&mut self) {
+                #(self.#derive_idents = Self::#derive_idents(self);)*
+            }
+        },
+        false => quote!(),
+    };
 
     Ok(quote! {
         impl ::lmfit::ModelParams for #name {
@@ -145,6 +264,7 @@ pub fn codegen(input: DeriveInput) -> Result<TokenStream> {
                         #nparams,
                     ),
                 }
+                #set_refresh
             }
 
             fn at_values(&self, values: &[f64]) -> Self {
@@ -155,17 +275,15 @@ pub fn codegen(input: DeriveInput) -> Result<TokenStream> {
                     #nparams,
                     values.len(),
                 );
-                Self {
-                    #(#value_fields)*
-                }
+                #at_values_body
             }
+
+            #refresh_impl
         }
 
         impl ::std::default::Default for #name {
             fn default() -> Self {
-                Self {
-                    #(#default_fields)*
-                }
+                #default_body
             }
         }
 
@@ -173,7 +291,8 @@ pub fn codegen(input: DeriveInput) -> Result<TokenStream> {
         #[doc = #partials_doc]
         #[derive(Debug, Clone)]
         #vis struct #partials_name<T = f64> {
-            #(pub #field_idents: T,)*
+            #(pub #plain_idents: T,)*
+            #partials_marker
         }
 
         impl ::lmfit::PartialValues for #partials_name<f64> {
@@ -185,12 +304,11 @@ pub fn codegen(input: DeriveInput) -> Result<TokenStream> {
 
             fn get(&self, index: usize) -> f64 {
                 match index {
-                    #(#get_arms)*
+                    #(#partial_arms)*
                     _ => ::std::panic!(
-                        "parameter index {} is out of range for model `{}`, which has {} parameters",
+                        "parameter index {} of model `{}` has no partial derivative (out of range, or derived)",
                         index,
                         #model_name,
-                        #nparams,
                     ),
                 }
             }
@@ -205,12 +323,11 @@ pub fn codegen(input: DeriveInput) -> Result<TokenStream> {
 
             fn get(&self, index: usize) -> ::lmfit::Complex64 {
                 match index {
-                    #(#get_arms)*
+                    #(#partial_arms)*
                     _ => ::std::panic!(
-                        "parameter index {} is out of range for model `{}`, which has {} parameters",
+                        "parameter index {} of model `{}` has no partial derivative (out of range, or derived)",
                         index,
                         #model_name,
-                        #nparams,
                     ),
                 }
             }
@@ -267,13 +384,6 @@ fn collect_fields(input: &DeriveInput) -> Result<Vec<Field>> {
         };
         let attrs = parse_param(attr)?;
 
-        let Some(value) = attrs.value else {
-            return Err(syn::Error::new(
-                field.span(),
-                format!("field `{ident}` needs a starting value: add `#[param(value = ...)]`"),
-            ));
-        };
-
         if !is_f64(&field.ty) {
             return Err(syn::Error::new(
                 field.ty.span(),
@@ -281,13 +391,52 @@ fn collect_fields(input: &DeriveInput) -> Result<Vec<Field>> {
             ));
         }
 
-        out.push(Field {
-            ident,
-            value,
-            min: attrs.min,
-            max: attrs.max,
-            vary: attrs.vary,
-        });
+        // 派生字段没有起点、没有界、不可变:任一条都与之矛盾,在编译期报出
+        // 而不是静默丢弃。
+        let role = match attrs.derive {
+            true => {
+                if attrs.value.is_some() {
+                    return Err(syn::Error::new(
+                        field.span(),
+                        format!(
+                            "field `{ident}` is derived: its value comes from the method \
+                             `{ident}()`, so `value` must be dropped"
+                        ),
+                    ));
+                }
+                if attrs.min.is_some() || attrs.max.is_some() {
+                    return Err(syn::Error::new(
+                        field.span(),
+                        format!("field `{ident}` is derived and cannot be bounded"),
+                    ));
+                }
+                if attrs.vary.is_some() {
+                    return Err(syn::Error::new(
+                        field.span(),
+                        format!("field `{ident}` is derived and is never varied"),
+                    ));
+                }
+                Role::Derive
+            }
+            false => {
+                let Some(value) = attrs.value else {
+                    return Err(syn::Error::new(
+                        field.span(),
+                        format!(
+                            "field `{ident}` needs a starting value: add `#[param(value = ...)]`"
+                        ),
+                    ));
+                };
+                Role::Plain {
+                    value,
+                    min: attrs.min,
+                    max: attrs.max,
+                    vary: attrs.vary,
+                }
+            }
+        };
+
+        out.push(Field { ident, role });
     }
 
     Ok(out)

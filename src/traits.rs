@@ -40,6 +40,8 @@ pub struct ParamSpec {
     pub max: Option<f64>,
     /// Whether the solver may vary this field. `false` pins it.
     pub vary: bool,
+    /// 该字段是否为派生量:值由模型的同名方法给出,不参与拟合。
+    pub derive: bool,
 }
 
 /// A model's parameter layout: which fields are fittable, and how to reach
@@ -92,10 +94,22 @@ pub trait ModelParams {
     /// Jacobian without needing `&mut` access to a model it only holds a
     /// shared reference to.
     ///
+    /// 派生字段的对应槽位被忽略:它们由 [`Self::refresh_derive`] 从其余字段重算。
+    ///
     /// # Panics
     ///
     /// Implementations may panic if `values.len() != NPARAMS`.
     fn at_values(&self, values: &[f64]) -> Self;
+
+    /// 由同名方法重算全部派生字段。
+    ///
+    /// `#[derive(Model)]` 生成覆写:按字段声明序,逐个调用与字段同名的固有
+    /// 方法并把结果写回字段。库在每处构造与写入之后调用本方法,使"派生字段
+    /// 恒等于其公式"这一不变量处处成立;普通字段不受影响。缺省体为空,供
+    /// 没有派生字段的模型使用。
+    ///
+    /// 返回:无(就地重算)。
+    fn refresh_derive(&mut self) {}
 
     /// Build the runtime [`Parameters`] collection this model describes.
     ///
@@ -113,6 +127,7 @@ pub trait ModelParams {
                 min: spec.min,
                 max: spec.max,
                 vary: spec.vary,
+                derive: spec.derive,
                 init: spec.value,
             })?;
         }
@@ -134,6 +149,9 @@ pub trait PartialValues {
     fn len(&self) -> usize;
 
     /// 读取第 `index` 个参数的一阶偏导。
+    ///
+    /// 派生字段没有偏导,而 [`Self::len`] 仍把它们计入索引空间,故对派生字段的
+    /// 下标调用会 panic;求解器只传变参数的下标,不会触及派生字段。
     ///
     /// * `index` —— 参数下标,序与 [`ModelParams::get`] 一致(字段声明序)。
     ///

@@ -14,6 +14,8 @@ pub struct ParamAttrs {
     pub max: Option<Expr>,
     /// Whether the solver may vary this field.
     pub vary: Option<Expr>,
+    /// 该字段是否为派生量(布尔标记,不带值)。
+    pub derive: bool,
 }
 
 /// Parse a field's `#[param(...)]`, rejecting anything unrecognised.
@@ -26,6 +28,19 @@ pub fn parse_param(attr: &Attribute) -> Result<ParamAttrs> {
     let mut out = ParamAttrs::default();
 
     attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("derive") {
+            if meta.input.peek(syn::Token![=]) {
+                return Err(meta.error(
+                    "`derive` is a flag; write `#[param(derive)]` without a value",
+                ));
+            }
+            if out.derive {
+                return Err(meta.error("duplicate `param` key"));
+            }
+            out.derive = true;
+            return Ok(());
+        }
+
         let tgt = if meta.path.is_ident("value") {
             &mut out.value
         } else if meta.path.is_ident("min") {
@@ -36,7 +51,9 @@ pub fn parse_param(attr: &Attribute) -> Result<ParamAttrs> {
             &mut out.vary
         } else {
             return Err(
-                meta.error("unknown `param` key; expected one of `value`, `min`, `max`, `vary`")
+                meta.error(
+                    "unknown `param` key; expected one of `value`, `min`, `max`, `vary`, `derive`",
+                )
             );
         };
 

@@ -37,6 +37,9 @@ pub struct Parameter {
     pub max: Option<f64>,
     /// Whether the solver may vary this parameter. `false` pins it.
     pub vary: bool,
+    /// 该参数是否为派生量:值由模型的同名方法算出,不参与拟合。派生量的
+    /// 标准误由协方差传播得到,不来自拟合自身的自由度。
+    pub derive: bool,
     /// The value the fit started from, preserved for the `(init = ...)` field
     /// of the fit report.
     pub init: f64,
@@ -51,6 +54,7 @@ impl Parameter {
             min: None,
             max: None,
             vary: true,
+            derive: false,
             init: value,
         }
     }

@@ -302,6 +302,64 @@ the same parameters and error bars as `fit` — only the reported statistics are
 rescaled. Complex data takes one σ per complex point, weighting the real and
 imaginary parts alike (the same convention as `numpy.std` on a complex array).
 
+## Derived parameters
+
+A parameter can be declared as *derived*: not fitted, but computed from the
+others. Mark the field `#[param(derive)]` and write a method carrying the
+field's own name — the formula is ordinary Rust, checked by the compiler:
+
+```rust
+use lmfit::{Curve, Model};
+
+#[derive(Model)]
+struct Notch {
+    #[param(value = 60_000.0)]
+    ql: f64,
+    #[param(value = 30_000.0)]
+    qc: f64,
+    #[param(value = 0.1)]
+    cos_theta: f64,
+    #[param(value = 5.0e9)]
+    fr: f64,
+    #[param(derive)]
+    qi: f64,
+    #[param(derive)]
+    kappa_ex: f64,
+}
+
+impl Notch {
+    /// qi = 1/(1/ql − cosθ/qc)
+    fn qi(&self) -> f64 {
+        1.0 / (1.0 / self.ql - self.cos_theta / self.qc)
+    }
+
+    /// κ_ex = fr/qc
+    fn kappa_ex(&self) -> f64 {
+        self.fr / self.qc
+    }
+}
+```
+
+A derived field is a full member of the parameter layout: it is never varied,
+`result.model.qi` reads it, `result.params.get("qi")` finds it, the report
+shows it as `(derive)`, and its `stderr` is propagated through the covariance
+of the varied parameters by the delta method, `σ² = pᵀCp`, with the partials
+differenced (bounds respected). Nothing else changes: adding a derived field
+leaves the fit itself bit-for-bit identical.
+
+Three rules worth knowing:
+
+- The formula must be an inherent method with the field's name and a `&self`
+  receiver. The field caches its result and the library refreshes it on every
+  construction and write, so `model.qi` and `model.qi()` agree. When building a
+  model by hand, fill the derived fields with `..Default::default()` rather than
+  by typing values that will be recomputed away.
+- A formula may read fields declared *before* it. A derived field declared
+  later is not yet computed at that point and reads as NaN.
+- A derived field cannot also carry `value`, `min`, `max` or `vary`: it has no
+  starting point, no bounds, and is never varied. The macro rejects the
+  combination at compile time.
+
 ## Implementation
 
 The solver is [Levenberg-Marquardt](https://crates.io/crates/levenberg-marquardt),
@@ -329,8 +387,7 @@ one, and neither knows about the other.
 
 Not yet implemented, in rough order of how much they are missed:
 
-- Parameter expressions (lmfit's `expr=`), and `guess()`-style heuristics for
-  picking starting values.
+- `guess()`-style heuristics for picking starting values.
 - Solvers other than `leastsq`, and global or derivative-free methods.
 
 ## Minimum supported Rust version

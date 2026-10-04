@@ -1,6 +1,6 @@
 [package]
 name = "lmfit"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.87"
 description = "Arbitrary curve fitting in Rust: real and complex models, bounded parameters, automatic or analytic Jacobians"
@@ -17,4 +17,4 @@ members = ["derive"]
 levenberg-marquardt = "0.15.0"
 nalgebra = "0.34"
 num-complex = "0.4"
-lmfit_derive = { version = "0.2.0", path = "derive" }
+lmfit_derive = { version = "0.3.0", path = "derive" }

@@ -27,8 +27,8 @@ use num_complex::Complex64;
 
 use crate::bounds::Transform;
 use crate::error::{Error, Result};
-use crate::numerics::{Covariance, covariance, forward_diff_jacobian};
-use crate::parameter::Parameters;
+use crate::numerics::{Covariance, central_fd_step, covariance, forward_diff_jacobian};
+use crate::parameter::{Parameter, Parameters};
 use crate::result::{ComplexResult, ModelResult, Statistics, statistics};
 use crate::traits::{ComplexCurve, Curve, ModelParams, PartialValues};
 
@@ -578,10 +578,12 @@ where
     // solver an empty parameter vector would only make it report
     // `NoParameters`.
     if varying.is_empty() {
+        // 同主路径:派生字段取自重算后的模型,而不是构造时的缓存。
+        let values: Vec<f64> = (0..M::NPARAMS).map(|i| working.get(i)).collect();
         return Ok(Solution {
             model: working,
             params,
-            values: default_values,
+            values,
             nfev: 0,
             success: true,
             message: "Fit succeeded: there was nothing to vary.".to_string(),
@@ -602,6 +604,8 @@ where
     // no `Clone` bound.
     let fit_result: Vec<f64> = (0..M::NPARAMS).map(|i| problem.model.get(i)).collect();
     let fit_model = model.at_values(&fit_result);
+    // 派生字段由 `at_values` 重算,这里取回权威值;普通字段逐位不变。
+    let values: Vec<f64> = (0..M::NPARAMS).map(|i| fit_model.get(i)).collect();
 
     // 最终雅可比:在收敛点差分,供协方差使用。探测次数计入 nfev。
     let at: Vec<f64> = problem.internal_params();
@@ -653,7 +657,7 @@ where
     Ok(Solution {
         model: fit_model,
         params,
-        values: fit_result,
+        values,
         nfev: problem.nfev.get(),
         success,
         message,
@@ -770,9 +774,9 @@ fn assemble_real<M: Curve>(
     let (stats, covar, stderr) = match sigma {
         Some(s) => {
             let scaled: Vec<f64> = residual.iter().zip(s).map(|(r, si)| r / si).collect();
-            finish(&params, nvarys, &scaled, jac_for_cov)
+            finish(&model, &params, nvarys, &scaled, jac_for_cov)
         }
-        None => finish(&params, nvarys, &residual, jac_for_cov),
+        None => finish(&model, &params, nvarys, &residual, jac_for_cov),
     };
 
     ModelResult {
@@ -845,7 +849,7 @@ fn assemble_complex<M: ComplexCurve, X: Copy + Into<Complex64>>(
     }
 
     let nvarys = params.no_fix_indices().len();
-    let (stats, covar, stderr) = finish(&params, nvarys, &real_residual, jac_for_cov);
+    let (stats, covar, stderr) = finish(&model, &params, nvarys, &real_residual, jac_for_cov);
 
     ComplexResult {
         model,
@@ -869,14 +873,91 @@ fn assemble_complex<M: ComplexCurve, X: Copy + Into<Complex64>>(
     }
 }
 
+/// 派生参数的标准误,按 delta 方法传播。
+///
+/// 传播式为 `σ_g² = pᵀCp`:`C` 是外部空间协方差(变参数序,与
+/// [`Parameters::no_fix_indices`] 同序),`p` 是派生量对各变参数的一阶偏导。
+/// 偏导取中心差商,每侧先经 [`Transform::to_internal`](先夹入界内)再
+/// [`Transform::from_internal`] 折回,故参数贴界时自动退化为单侧差商,不会
+/// 产生越界点;往返把两侧塌缩成同一点时该项贡献 0(参数在外部空间里动不了)。
+///
+/// * `model` —— 收敛点的模型,派生字段已由 `at_values` 重算;
+/// * `params` —— 已回填拟合值的参数表;`covar` —— 变参数协方差。
+///
+/// 返回:派生参数的 `(参数下标, 标准误)` 表;非派生参数不在其中。
+fn derive_stderr<M: ModelParams>(
+    model: &M,
+    params: &Parameters,
+    covar: &Covariance,
+) -> Vec<(usize, f64)> {
+    // 变参数的序即协方差矩阵的序,与 `no_fix_indices` 一致。
+    let varying: Vec<(usize, &Parameter)> = params
+        .iter()
+        .enumerate()
+        .filter(|entry| entry.1.vary)
+        .collect();
+    let base = params.values();
+    let mut out = Vec::new();
+
+    for (d, p) in params.iter().enumerate() {
+        if !p.derive {
+            continue;
+        }
+        let mut grad = vec![0.0; varying.len()];
+        for (j, &(v, vp)) in varying.iter().enumerate() {
+            let transform = match vp.transform() {
+                Ok(t) => t,
+                Err(err) => {
+                    // fit_core 已对同一批参数校验过变换,此处不可达;真发生时
+                    // 不写任何派生标准误,而不是写下可疑的数。
+                    debug_assert!(false, "变参数变换在传播时失败: {err:?}");
+                    return Vec::new();
+                }
+            };
+            let theta = base[v];
+            let h = central_fd_step(theta);
+            let up = transform.from_internal(transform.to_internal(theta + h));
+            let down = transform.from_internal(transform.to_internal(theta - h));
+            let dtheta = up - down;
+            grad[j] = match dtheta == 0.0 {
+                true => 0.0,
+                false => {
+                    let mut values = base.clone();
+                    values[v] = up;
+                    let g_up = model.at_values(&values).get(d);
+                    values[v] = down;
+                    let g_down = model.at_values(&values).get(d);
+                    (g_up - g_down) / dtheta
+                }
+            };
+        }
+        let mut var = 0.0;
+        for (j, gj) in grad.iter().enumerate() {
+            for (k, gk) in grad.iter().enumerate() {
+                var += gj * gk * covar.matrix[j * covar.nvarys + k];
+            }
+        }
+        // 负值只可能来自舍入(精确算术下二次型半正定),夹到 0;NaN 原样放行,
+        // 让"派生量在收敛点非有限"显式可见,而不是伪造一个精确的 0。
+        let var = match var < 0.0 {
+            true => 0.0,
+            false => var,
+        };
+        out.push((d, var.sqrt()));
+    }
+    out
+}
+
 /// 统计量、协方差与标准误的共享计算:实数与复数装配壳共用。
 ///
-/// * `params` —— 已回填拟合值的参数表;`nvarys` —— 变参数个数。
+/// * `model` —— 收敛点的模型(派生标准误的传播要重新构造它);
+///   `params` —— 已回填拟合值的参数表;`nvarys` —— 变参数个数。
 /// * `real_residual` —— 实数残差(复数按实部、虚部交错)。
 /// * `jac_for_cov` —— 最终雅可比与梯度因子,不可得时为 None。
 ///
-/// 返回:统计量、协方差与逐参数标准误(固定参数为 None)。
-fn finish(
+/// 返回:统计量、协方差与逐参数标准误(固定参数与无协方差时为 None)。
+fn finish<M: ModelParams>(
+    model: &M,
     params: &Parameters,
     nvarys: usize,
     real_residual: &[f64],
@@ -899,6 +980,10 @@ fn finish(
                     stderr[i] = Some(se[k]);
                     k += 1;
                 }
+            }
+            // 派生量的标准误不是自由度的函数,而是变参数协方差的函数。
+            for (i, se) in derive_stderr(model, params, c) {
+                stderr[i] = Some(se);
             }
         }
         None => {}

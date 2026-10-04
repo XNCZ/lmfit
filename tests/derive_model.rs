@@ -29,6 +29,7 @@ impl ModelParams for HandGaussian {
                 min: None,
                 max: None,
                 vary: true,
+                derive: false,
             },
             ParamSpec {
                 name: "cen".to_string(),
@@ -36,6 +37,7 @@ impl ModelParams for HandGaussian {
                 min: None,
                 max: None,
                 vary: true,
+                derive: false,
             },
             ParamSpec {
                 name: "wid".to_string(),
@@ -43,6 +45,7 @@ impl ModelParams for HandGaussian {
                 min: Some(0.0),
                 max: None,
                 vary: true,
+                derive: false,
             },
         ]
     }

@@ -28,6 +28,20 @@ pub fn fd_step(value: f64) -> f64 {
     if h == 0.0 { eps } else { h }
 }
 
+/// 中心差分的相对步长:机器精度的立方根。
+///
+/// 中心差分的截断误差 O(h²)、舍入误差 O(ε/h),平衡点在 h ∝ ε^(1/3) ≈ 6.06e-6;
+/// 它是前向差分步长 `√ε` 的约 400 倍,故只用于一次性、热路径外的传播计算。
+///
+/// * `value` —— 当前参数值,步长随其量级缩放。
+///
+/// 返回:该参数处的相对步长;零处退回裸的 `ε^(1/3)`。
+pub(crate) fn central_fd_step(value: f64) -> f64 {
+    let eps = f64::EPSILON.cbrt();
+    let h = eps * value.abs();
+    if h == 0.0 { eps } else { h }
+}
+
 /// Fill `out` with a forward-difference Jacobian of the residual vector.
 ///
 /// `params` is the point to differentiate at and `base` the residuals already

@@ -157,15 +157,14 @@ fn handle_variables(parts: &ReportParts<'_>, out: &mut String) {
     }
     let width = params.iter().map(|p| p.name.len()).max().unwrap_or(0);
 
-    // value 与 stderr 两列各自按实测最宽对齐,使 (init/(fixed 标记同列。
+    // value 与 stderr 两列各自按实测最宽对齐,使 (init/(fix/(derive 标记同列。
     let value_strs: Vec<String> = params.iter().map(|p| gformat(p.value)).collect();
     let se_strs: Vec<String> = parts
         .stderr
         .iter()
-        .zip(params.iter())
-        .map(|(se, p)| match (se, p.vary) {
-            (Some(s), true) => format!("+/- {}", gformat(*s)),
-            (None, true) | (_, false) => String::new(),
+        .map(|se| match se {
+            Some(s) => format!("+/- {}", gformat(*s)),
+            None => String::new(),
         })
         .collect();
     let value_width = value_strs.iter().map(|s| s.len()).max().unwrap_or(0);
@@ -184,13 +183,14 @@ fn handle_variables(parts: &ReportParts<'_>, out: &mut String) {
         out.push_str(&se_strs[i]);
         out.push_str(&" ".repeat(se_width - se_strs[i].len()));
         out.push(' ');
-        if p.vary {
-            out.push_str("(init = ");
-            out.push_str(&gformat(p.init));
-            out.push(')');
-        } else {
-            out.push_str("(fixed)");
-        }
+        let marker = match p.derive {
+            true => "(derive)".to_string(),
+            false => match p.vary {
+                true => format!("(init = {})", gformat(p.init)),
+                false => "(fix)".to_string(),
+            },
+        };
+        out.push_str(&marker);
         out.push('\n');
     }
 }

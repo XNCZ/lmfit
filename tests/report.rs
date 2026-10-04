@@ -164,7 +164,7 @@ fn fixed_parameters_are_marked() {
         .lines()
         .find(|l| l.trim_start().starts_with("amp:"))
         .expect("amp line");
-    assert!(amp_line.ends_with("(fixed)"), "{amp_line}");
+    assert!(amp_line.ends_with("(fix)"), "{amp_line}");
 
     let cen_line = report
         .lines()
@@ -193,7 +193,7 @@ fn trim(v: &f64) -> String {
     }
 }
 
-/// stderr 出现在变量行;固定参数仍显示 (fixed),无 +/-。
+/// stderr 出现在变量行;固定参数仍显示 (fix),无 +/-。
 #[test]
 fn variables_show_stderr_when_present() {
     let report = fit_gaussian().to_string();
