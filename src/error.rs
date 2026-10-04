@@ -16,7 +16,7 @@ pub enum Error {
     MinEqualsMax { name: String, min: f64 },
 
     /// A parameter's lower bound exceeded its upper bound.
-    InvertedBounds { name: String, min: f64, max: f64 },
+    MinAboveMax { name: String, min: f64, max: f64 },
 
     /// `x` and `y` did not have the same length.
     DimensionMismatch { x: usize, y: usize },
@@ -32,6 +32,12 @@ pub enum Error {
 
     /// Fewer data points than varied parameters; the problem is underdetermined.
     TooFewDataPoints { ndata: usize, nvarys: usize },
+
+    /// `sigma` 的长度与数据点数量不一致。
+    SigmaMismatch { npoints: usize, sigma: usize },
+
+    /// `sigma` 的第 index 项不是有限的正数。
+    InvalidSigma { index: usize, value: f64 },
 }
 
 impl fmt::Display for Error {
@@ -41,7 +47,7 @@ impl fmt::Display for Error {
                 f,
                 "parameter `{name}` has min == max == {min}, leaving nothing to vary"
             ),
-            Self::InvertedBounds { name, min, max } => write!(
+            Self::MinAboveMax { name, min, max } => write!(
                 f,
                 "parameter `{name}` has min ({min}) greater than max ({max})"
             ),
@@ -58,6 +64,14 @@ impl fmt::Display for Error {
             Self::TooFewDataPoints { ndata, nvarys } => {
                 write!(f, "cannot fit {nvarys} parameters to {ndata} data points")
             }
+            Self::SigmaMismatch { npoints, sigma } => write!(
+                f,
+                "sigma has {sigma} entries for {npoints} data points"
+            ),
+            Self::InvalidSigma { index, value } => write!(
+                f,
+                "sigma[{index}] must be a finite positive number, got {value}"
+            ),
         }
     }
 }

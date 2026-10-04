@@ -95,6 +95,14 @@ pub(crate) trait ResidualSrc<M: ModelParams, X> {
     /// 实数残差缓冲的槽位数(实数 1 倍、复数 2 倍)。
     fn nslots(&self) -> usize;
 
+    /// 逐点测量不确定度;不提供时为 `None`(等价于全 1)。
+    ///
+    /// 解析雅可比组装据此决定是否乘 `1/σ`——只把加权做在残差里会让有限差分
+    /// 路径正确、解析路径静默走偏。
+    fn sigmas(&self) -> Option<&[f64]> {
+        None
+    }
+
     /// 将每个数据点处的残差写入 `out`。
     ///
     /// 返回:出现首个非有限残差时记录其数据点下标并返回 false —— 单个 NaN
@@ -107,6 +115,92 @@ pub(crate) trait ResidualSrc<M: ModelParams, X> {
         nonfinite_at: &Cell<Option<usize>>,
         out: &mut [f64],
     ) -> bool;
+}
+
+/// 带不确定度的观测:逐点残差按 `1/σ` 加权。
+///
+/// 权重挂在数据源上而不是求解器的形参上,因为它有**两个**消费者:残差写入
+/// (除以 σ)与解析雅可比组装(乘 `1/σ`)。做成独立类型而非可选参数,也让
+/// 未加权路径保持零开销——两个形状单态化成两份代码,热循环里没有分支,
+/// 也没有乘以 1.0 的乘法。
+pub(crate) struct Measurement<'a, Y: ?Sized> {
+    /// 观测值(`[f64]` 或 `[Complex64]`)。
+    pub y: &'a Y,
+    /// 逐点测量不确定度,长度等于数据点数。
+    pub sigma: &'a [f64],
+}
+
+impl<M: Curve> ResidualSrc<M, f64> for Measurement<'_, [f64]> {
+    fn npoints(&self) -> usize {
+        self.y.len()
+    }
+
+    fn nslots(&self) -> usize {
+        self.y.len()
+    }
+
+    fn sigmas(&self) -> Option<&[f64]> {
+        Some(self.sigma)
+    }
+
+    fn override_residuals(
+        &self,
+        model: &M,
+        x: &[f64],
+        nfev: &Cell<usize>,
+        nonfinite_at: &Cell<Option<usize>>,
+        out: &mut [f64],
+    ) -> bool {
+        nfev.set(nfev.get() + 1);
+        for (i, (&xi, &yi)) in x.iter().zip(self.y).enumerate() {
+            let r = (yi - model.eval(xi)) / self.sigma[i];
+            if !r.is_finite() {
+                if nonfinite_at.get().is_none() {
+                    nonfinite_at.set(Some(i));
+                }
+                return false;
+            }
+            out[i] = r;
+        }
+        true
+    }
+}
+
+impl<M: ComplexCurve, X: Copy + Into<Complex64>> ResidualSrc<M, X> for Measurement<'_, [Complex64]> {
+    fn npoints(&self) -> usize {
+        self.y.len()
+    }
+
+    fn nslots(&self) -> usize {
+        self.y.len() * 2
+    }
+
+    fn sigmas(&self) -> Option<&[f64]> {
+        Some(self.sigma)
+    }
+
+    fn override_residuals(
+        &self,
+        model: &M,
+        x: &[X],
+        nfev: &Cell<usize>,
+        nonfinite_at: &Cell<Option<usize>>,
+        out: &mut [f64],
+    ) -> bool {
+        nfev.set(nfev.get() + 1);
+        for (i, (&xi, &yi)) in x.iter().zip(self.y).enumerate() {
+            let r = (yi - model.eval(xi.into())) / self.sigma[i];
+            if !r.re.is_finite() || !r.im.is_finite() {
+                if nonfinite_at.get().is_none() {
+                    nonfinite_at.set(Some(i));
+                }
+                return false;
+            }
+            out[2 * i] = r.re;
+            out[2 * i + 1] = r.im;
+        }
+        true
+    }
 }
 
 impl<'a, M: Curve> ResidualSrc<M, f64> for &'a [f64] {
@@ -354,18 +448,25 @@ fn assemble_analytic_real<M: Curve, D: ResidualSrc<M, f64>>(
         .enumerate()
         .map(|(j, v)| v.transform.scale_gradient(at[j]))
         .collect();
+    // 加权拟合的雅可比是**加权残差**的雅可比:列上要多乘 1/σ。漏掉它的后果是
+    // 有限差分路径正确、解析路径静默走偏——两条路各自自洽,极难发现。
+    let sigmas = this.data.sigmas();
     for i in 0..m {
+        let weight = match sigmas {
+            Some(s) => 1.0 / s[i],
+            None => 1.0,
+        };
         let p = match this.model.partials_at(this.x[i]) {
             Some(p) => p,
             None => return Analytic::Default,
         };
         debug_assert_eq!(p.len(), M::NPARAMS, "PartialValues::len 与 NPARAMS 不符");
         for (j, v) in this.varying.iter().enumerate() {
-            let d = p.get(v.index);
+            let d = -p.get(v.index) * scale[j] * weight;
             if !d.is_finite() {
                 return Analytic::NonFinite;
             }
-            out[j * m + i] = -d * scale[j];
+            out[j * m + i] = d;
         }
     }
     Analytic::Available
@@ -392,14 +493,20 @@ fn assemble_analytic_complex<M: ComplexCurve, D: ResidualSrc<M, X>, X: Copy + In
         .enumerate()
         .map(|(j, v)| v.transform.scale_gradient(at[j]))
         .collect();
+    // 同实数路径:每个复频点一个 σ,实部与虚部同权。
+    let sigmas = this.data.sigmas();
     for i in 0..m {
+        let weight = match sigmas {
+            Some(s) => 1.0 / s[i],
+            None => 1.0,
+        };
         let p = match this.model.partials_at(this.x[i].into()) {
             Some(p) => p,
             None => return Analytic::Default,
         };
         debug_assert_eq!(p.len(), M::NPARAMS, "PartialValues::len 与 NPARAMS 不符");
         for (j, v) in this.varying.iter().enumerate() {
-            let d = p.get(v.index) * (-scale[j]);
+            let d = p.get(v.index) * (-scale[j]) * weight;
             if !d.re.is_finite() || !d.im.is_finite() {
                 return Analytic::NonFinite;
             }
@@ -559,7 +666,7 @@ where
 /// Split out of [`Curve::fit`] so the trait stays a thin facade.
 pub(crate) fn fit<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> Result<ModelResult<M>> {
     let solved = fit_core(model, y, x, Some(assemble_analytic_real::<M, &[f64]>))?;
-    Ok(assemble_real(solved, y, x))
+    Ok(assemble_real(solved, y, x, None))
 }
 
 /// Run a complex fit.
@@ -571,11 +678,72 @@ pub(crate) fn fit_complex<M: ComplexCurve, X: Copy + Into<Complex64>>(
     x: &[X],
 ) -> Result<ComplexResult<M>> {
     let solved = fit_core(model, y, x, Some(assemble_analytic_complex::<M, &[Complex64], X>))?;
-    Ok(assemble_complex(solved, y, x))
+    Ok(assemble_complex(solved, y, x, None))
+}
+
+/// 校验逐点 σ:长度与数据点一致,且每项有限为正。
+///
+/// * `npoints` —— 数据点个数;`sigma` —— 待校验的逐点不确定度。
+///
+/// 返回:全部合法时为 `Ok`;否则为对应的 [`Error`]。
+fn check_sigma(npoints: usize, sigma: &[f64]) -> Result<()> {
+    if sigma.len() != npoints {
+        return Err(Error::SigmaMismatch {
+            npoints,
+            sigma: sigma.len(),
+        });
+    }
+    for (index, &value) in sigma.iter().enumerate() {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(Error::InvalidSigma { index, value });
+        }
+    }
+    Ok(())
+}
+
+/// 以逐点不确定度加权运行一次实数拟合。
+///
+/// * `model` —— 起点模型;`y` —— 观测;`x` —— 自变量;`sigma` —— 逐点不确定度。
+///
+/// 返回:拟合结果;σ 非法时报错。
+pub(crate) fn fit_sigma<M: Curve>(
+    model: &M,
+    y: &[f64],
+    x: &[f64],
+    sigma: &[f64],
+) -> Result<ModelResult<M>> {
+    check_sigma(y.len(), sigma)?;
+    let source = Measurement { y, sigma };
+    let solved = fit_core(model, source, x, Some(assemble_analytic_real::<M, _>))?;
+    Ok(assemble_real(solved, y, x, Some(sigma)))
+}
+
+/// 以逐点不确定度加权运行一次复数拟合。
+///
+/// 每个复频点一个 σ,实部与虚部同权。
+///
+/// * `model` —— 起点模型;`y` —— 复观测;`x` —— 自变量;`sigma` —— 逐点不确定度。
+///
+/// 返回:拟合结果;σ 非法时报错。
+pub(crate) fn fit_complex_sigma<M: ComplexCurve, X: Copy + Into<Complex64>>(
+    model: &M,
+    y: &[Complex64],
+    x: &[X],
+    sigma: &[f64],
+) -> Result<ComplexResult<M>> {
+    check_sigma(y.len(), sigma)?;
+    let source = Measurement { y, sigma };
+    let solved = fit_core(model, source, x, Some(assemble_analytic_complex::<M, _, X>))?;
+    Ok(assemble_complex(solved, y, x, Some(sigma)))
 }
 
 /// 由共享结果装配实数拟合结果:重建曲线与残差,补齐统计、协方差与标准误。
-fn assemble_real<M: Curve>(solved: Solution<M>, y: &[f64], x: &[f64]) -> ModelResult<M> {
+fn assemble_real<M: Curve>(
+    solved: Solution<M>,
+    y: &[f64],
+    x: &[f64],
+    sigma: Option<&[f64]>,
+) -> ModelResult<M> {
     let Solution {
         model,
         mut params,
@@ -598,7 +766,14 @@ fn assemble_real<M: Curve>(solved: Solution<M>, y: &[f64], x: &[f64]) -> ModelRe
         .collect();
 
     let nvarys = params.no_fix_indices().len();
-    let (stats, covar, stderr) = finish(&params, nvarys, &residual, jac_for_cov);
+    // 统计按加权残差算;`residual` 字段本身保持未加权(与 `best_fit` 同口径)。
+    let (stats, covar, stderr) = match sigma {
+        Some(s) => {
+            let scaled: Vec<f64> = residual.iter().zip(s).map(|(r, si)| r / si).collect();
+            finish(&params, nvarys, &scaled, jac_for_cov)
+        }
+        None => finish(&params, nvarys, &residual, jac_for_cov),
+    };
 
     ModelResult {
         model,
@@ -628,6 +803,7 @@ fn assemble_complex<M: ComplexCurve, X: Copy + Into<Complex64>>(
     solved: Solution<M>,
     y: &[Complex64],
     x: &[X],
+    sigma: Option<&[f64]>,
 ) -> ComplexResult<M> {
     let Solution {
         model,
@@ -652,9 +828,20 @@ fn assemble_complex<M: ComplexCurve, X: Copy + Into<Complex64>>(
 
     // 逐点交错为实数残差 [re, im](与 numpy view(float) 同序);NaN 自然传播。
     let mut real_residual = Vec::with_capacity(residual.len() * 2);
-    for r in &residual {
-        real_residual.push(r.re);
-        real_residual.push(r.im);
+    match sigma {
+        // 每个复频点一个 σ,实部与虚部同权。
+        Some(s) => {
+            for (r, si) in residual.iter().zip(s) {
+                real_residual.push(r.re / si);
+                real_residual.push(r.im / si);
+            }
+        }
+        None => {
+            for r in &residual {
+                real_residual.push(r.re);
+                real_residual.push(r.im);
+            }
+        }
     }
 
     let nvarys = params.no_fix_indices().len();

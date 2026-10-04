@@ -240,6 +240,24 @@ pub trait Curve: ModelParams + Sized {
     fn fit(&self, y: &[f64], x: &[f64]) -> Result<ModelResult<Self>> {
         crate::solver::fit(self, y, x)
     }
+
+    /// 以逐点测量不确定度 `sigma` 加权拟合。
+    ///
+    /// `sigma[i]` 是第 `i` 个观测 `y[i]` 的标准不确定度,残差按 `1/sigma[i]`
+    /// 加权(即权重 `1/σ²`):σ 小的点对拟合的牵引更强。`chisqr`、`redchi` 与
+    /// 协方差都按加权后的量计算;结果里的 `residual` 仍是未加权的原始残差。
+    /// 起点、边界与收敛语义与 [`Curve::fit`] 完全一致。
+    ///
+    /// 一个实务配方:若第 `i` 点是 `n` 次单发测量的平均,则
+    /// `sigma[i] = std(shots_i) / sqrt(n)`。
+    ///
+    /// # Errors
+    ///
+    /// 与 [`Curve::fit`] 相同,另加两条:`sigma` 长度与数据点数不符,或某项
+    /// 不是有限的正数。
+    fn fit_sigma(&self, y: &[f64], x: &[f64], sigma: &[f64]) -> Result<ModelResult<Self>> {
+        crate::solver::fit_sigma(self, y, x, sigma)
+    }
 }
 
 /// 复数曲线模型:复数入、复数出,参数为实数。
@@ -274,5 +292,22 @@ pub trait ComplexCurve: ModelParams + Sized {
         x: &[X],
     ) -> Result<ComplexResult<Self>> {
         crate::solver::fit_complex(self, y, x)
+    }
+
+    /// 以逐点测量不确定度 `sigma` 加权拟合复数数据。
+    ///
+    /// 每个复频点一个 `sigma`,实部与虚部同权(与 numpy 对复数数组取 `std` 的
+    /// 口径一致);其余语义与 [`Curve::fit_sigma`] 相同。
+    ///
+    /// # Errors
+    ///
+    /// 与 [`ComplexCurve::fit`] 相同,另加 `sigma` 的两个校验错误。
+    fn fit_sigma<X: Copy + Into<Complex64>>(
+        &self,
+        y: &[Complex64],
+        x: &[X],
+        sigma: &[f64],
+    ) -> Result<ComplexResult<Self>> {
+        crate::solver::fit_complex_sigma(self, y, x, sigma)
     }
 }

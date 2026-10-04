@@ -261,6 +261,47 @@ Omitting the method keeps a fit on finite differences, unchanged. With it, the
 solver spends no residual evaluations on Jacobian probes — the same fit needs
 far fewer.
 
+## Uncertainties
+
+`fit_sigma` takes one standard uncertainty per data point and weights the fit by
+`1/σ²`, so points that are known precisely pull harder:
+
+```rust
+use lmfit::{Curve, Model};
+
+#[derive(Model)]
+struct Line {
+    #[param(value = 1.0)]
+    slope: f64,
+    #[param(value = 0.0)]
+    intercept: f64,
+}
+
+impl Curve for Line {
+    fn eval(&self, x: f64) -> f64 {
+        self.slope * x + self.intercept
+    }
+}
+
+fn main() -> Result<(), lmfit::Error> {
+    let x = vec![0.0, 1.0, 2.0, 3.0];
+    let y = vec![1.0, 3.1, 4.9, 7.2];
+    // 每点的单发散度除以 sqrt(单发次数):均值的不确定度。
+    let sigma = vec![0.05, 0.2, 0.05, 0.2];
+
+    let result = Line::default().fit_sigma(&y, &x, &sigma)?;
+    println!("{result}");
+    Ok(())
+}
+```
+
+What changes: `chisqr` and `redchi` are the weighted sums `Σ((y−f)/σ)²`, and the
+covariance follows them through the usual `(JᵀJ)⁻¹·redchi`. What does not:
+`residual` stays the raw `y − f`, and a fit whose σ are all equal gives exactly
+the same parameters and error bars as `fit` — only the reported statistics are
+rescaled. Complex data takes one σ per complex point, weighting the real and
+imaginary parts alike (the same convention as `numpy.std` on a complex array).
+
 ## Implementation
 
 The solver is [Levenberg-Marquardt](https://crates.io/crates/levenberg-marquardt),

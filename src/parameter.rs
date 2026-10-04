@@ -123,7 +123,7 @@ impl Parameter {
                 name: self.name.clone(),
                 min,
             },
-            Error::InvertedBounds { min, max, .. } => Error::InvertedBounds {
+            Error::MinAboveMax { min, max, .. } => Error::MinAboveMax {
                 name: self.name.clone(),
                 min,
                 max,
@@ -310,8 +310,8 @@ mod tests {
 
         let q = Parameter::new("width", 1.0).bounds(9.0, 1.0);
         match q.transform().unwrap_err() {
-            Error::InvertedBounds { name, .. } => assert_eq!(name, "width"),
-            other => panic!("expected InvertedBounds, got {other:?}"),
+            Error::MinAboveMax { name, .. } => assert_eq!(name, "width"),
+            other => panic!("expected MinAboveMax, got {other:?}"),
         }
     }
 

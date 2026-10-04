@@ -49,7 +49,7 @@ impl Transform {
     /// # Errors
     ///
     /// Returns [`Error::MinEqualsMax`] when both bounds are present and equal
-    /// (there would be nothing left to vary), and [`Error::InvertedBounds`]
+    /// (there would be nothing left to vary), and [`Error::MinAboveMax`]
     /// when `min > max`. A non-finite bound is likewise rejected.
     pub fn new(min: Option<f64>, max: Option<f64>) -> Result<Self> {
         match (min, max) {
@@ -72,7 +72,7 @@ impl Transform {
                     });
                 }
                 if lo > hi {
-                    return Err(Error::InvertedBounds {
+                    return Err(Error::MinAboveMax {
                         name: String::from("<unnamed>"),
                         min: lo,
                         max: hi,
@@ -331,7 +331,7 @@ mod tests {
         ));
         assert!(matches!(
             Transform::new(Some(5.0), Some(1.0)),
-            Err(Error::InvertedBounds { .. })
+            Err(Error::MinAboveMax { .. })
         ));
         assert!(matches!(
             Transform::new(Some(f64::NAN), None),
