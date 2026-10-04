@@ -16,7 +16,8 @@ pub struct ModelResult<M> {
     pub model: M,
 
     /// The fitted parameters, in the same order as the model's fields. Carries
-    /// bounds and initial values, which the model's fields do not.
+    /// bounds, initial values and standard errors, which the model's fields do
+    /// not.
     pub params: Parameters,
 
     /// The independent variable the fit was given.
@@ -29,8 +30,6 @@ pub struct ModelResult<M> {
     /// `y - best_fit`, one entry per data point.
     pub residual: Vec<f64>,
 
-    /// 每个参数的标准误,插入序;固定参数或协方差不可得时为 None。
-    pub stderr: Vec<Option<f64>>,
     /// 变参数协方差(外部空间),不可得时为 None。
     pub covar: Option<crate::numerics::Covariance>,
 
@@ -79,7 +78,9 @@ pub struct ComplexResult<M> {
     /// The fitted model. Its fields are the parameter values.
     pub model: M,
 
-    /// The fitted parameters, in the same order as the model's fields.
+    /// The fitted parameters, in the same order as the model's fields. Carries
+    /// bounds, initial values and standard errors, which the model's fields do
+    /// not.
     pub params: Parameters,
 
     /// The complex independent variable the fit was given(实自变量以虚部 0 嵌入)。
@@ -92,8 +93,6 @@ pub struct ComplexResult<M> {
     /// `y - best_fit`, one entry per data point.
     pub residual: Vec<Complex64>,
 
-    /// 每个参数的标准误,插入序;固定参数或协方差不可得时为 None。
-    pub stderr: Vec<Option<f64>>,
     /// 变参数协方差(外部空间),不可得时为 None。
     pub covar: Option<crate::numerics::Covariance>,
 

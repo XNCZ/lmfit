@@ -2,7 +2,9 @@
 //!
 //! A [`Parameter`] carries everything the solver needs to know about one
 //! quantity: where it starts, how far it may move, and whether it moves at
-//! all. [`Parameters`] is the ordered collection a fit reports over.
+//! all. Once a fit has run it also carries that quantity's standard error, so
+//! a value and its uncertainty are read from one place.
+//! [`Parameters`] is the ordered collection a fit reports over.
 //!
 //! Reading a fitted value is deliberately *not* done through this collection.
 //! A model's parameters are its struct fields, so `result.model.amplitude` is
@@ -31,6 +33,8 @@ pub struct Parameter {
     pub name: String,
     /// Current value.
     pub value: f64,
+    /// 拟合给出的标准误;拟合之前、固定参数、以及协方差不可得时都是 `None`。
+    pub stderr: Option<f64>,
     /// Lower bound, if any.
     pub min: Option<f64>,
     /// Upper bound, if any.
@@ -51,6 +55,7 @@ impl Parameter {
         Self {
             name: name.into(),
             value,
+            stderr: None,
             min: None,
             max: None,
             vary: true,

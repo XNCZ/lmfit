@@ -2,6 +2,11 @@
 
 use lmfit::{ComplexCurve, Curve, Model, ModelParams};
 
+/// 按名字取标准误:它与值同住在 `Parameter` 上。
+fn stderr_of<M: ModelParams>(r: &lmfit::ModelResult<M>, name: &str) -> Option<f64> {
+    r.params.get(name).expect("参数在表内").stderr
+}
+
 /// 直线:两个普通参数 + 两个派生量(和与积)。
 #[derive(Model, Debug)]
 struct Line {
@@ -104,8 +109,11 @@ fn adding_a_derived_parameter_does_not_move_the_fit() {
     assert_eq!(plain.chisqr, derived.chisqr);
     assert_eq!(plain.model.slope, derived.model.slope);
     assert_eq!(plain.model.intercept, derived.model.intercept);
-    assert_eq!(plain.stderr[0], derived.stderr[0]);
-    assert_eq!(plain.stderr[1], derived.stderr[1]);
+    assert_eq!(stderr_of(&plain, "slope"), stderr_of(&derived, "slope"));
+    assert_eq!(
+        stderr_of(&plain, "intercept"),
+        stderr_of(&derived, "intercept")
+    );
 }
 
 #[test]
@@ -124,7 +132,7 @@ fn a_derived_parameter_is_not_varied() {
     assert!(p.derive);
     assert_eq!(r.nvarys, 2);
     assert_eq!(r.params.no_fix_indices(), vec![0, 1]);
-    assert_eq!(r.stderr.len(), 4);
+    assert_eq!(r.params.len(), 4);
 }
 
 #[test]
@@ -201,7 +209,7 @@ fn derived_stderr_matches_the_delta_method() {
 
     // ∂sum/∂s = ∂sum/∂b = 1;∂product/∂s = b,∂product/∂b = s。
     let (s, b) = (r.model.slope, r.model.intercept);
-    for (p, i) in [([1.0, 1.0], 2usize), ([b, s], 3usize)] {
+    for (p, name) in [([1.0, 1.0], "sum"), ([b, s], "product")] {
         let mut var = 0.0;
         for j in 0..2 {
             for k in 0..2 {
@@ -209,10 +217,10 @@ fn derived_stderr_matches_the_delta_method() {
             }
         }
         let want = var.max(0.0).sqrt();
-        let got = r.stderr[i].expect("派生的标准误已传播");
+        let got = stderr_of(&r, name).expect("派生的标准误已传播");
         assert!(
             (got - want).abs() < 1e-6 * want,
-            "下标 {i}: {got} vs {want}"
+            "{name}: {got} vs {want}"
         );
     }
 }
@@ -257,11 +265,11 @@ fn a_fixed_parameter_feeds_the_formula_without_adding_variance() {
 
     assert_eq!(r.model.scaled, r.model.known / r.model.slope);
     // 固定参数自身没有标准误;派生量有,且等于 ∂/∂s = -known/s² 的单参数传播。
-    assert_eq!(r.stderr[2], None);
+    assert_eq!(stderr_of(&r, "known"), None);
     let c = r.covar.as_ref().expect("协方差可得");
     let d = -r.model.known / (r.model.slope * r.model.slope);
     let want = (d * d * c.matrix[0]).max(0.0).sqrt();
-    let got = r.stderr[3].expect("派生的标准误已传播");
+    let got = stderr_of(&r, "scaled").expect("派生的标准误已传播");
     assert!((got - want).abs() < 1e-6 * want, "{got} vs {want}");
 }
 
@@ -323,7 +331,12 @@ fn complex_models_propagate_derived_stderr() {
         }
     }
     let want = var.max(0.0).sqrt();
-    let got = r.stderr[2].expect("派生的标准误已传播");
+    let got = r
+        .params
+        .get("span")
+        .expect("参数在表内")
+        .stderr
+        .expect("派生的标准误已传播");
     assert!((got - want).abs() < 1e-6 * want, "{got} vs {want}");
 }
 
@@ -357,7 +370,8 @@ fn without_a_covariance_derived_stderr_stays_none() {
     assert!(r.success);
     assert_eq!(r.covar, None);
     assert_eq!(r.model.twice, 4.0);
-    assert_eq!(r.stderr, vec![None, None]);
+    assert!(r.params.iter().all(|p| p.stderr.is_none()));
+    assert_eq!(r.params.len(), 2);
 }
 
 /// 全部字段都是派生量的模型:一个普通字段都没有,也必须能编译、能拟合。
@@ -446,7 +460,7 @@ fn a_non_finite_derived_value_yields_a_nan_stderr() {
     .expect("拟合");
 
     assert!(r.model.early.is_nan(), "逆序引用本就该得 NaN");
-    match r.stderr[1] {
+    match stderr_of(&r, "early") {
         Some(se) => assert!(se.is_nan(), "非有限的派生量必须报 NaN,实际 {se}"),
         None => panic!("协方差可得,派生槽位不该是 None"),
     }
@@ -491,7 +505,12 @@ fn weighted_complex_fits_propagate_derived_stderr() {
         }
     }
     let want = var.max(0.0).sqrt();
-    let got = r.stderr[2].expect("派生的标准误已传播");
+    let got = r
+        .params
+        .get("span")
+        .expect("参数在表内")
+        .stderr
+        .expect("派生的标准误已传播");
     assert!((got - want).abs() < 1e-6 * want, "{got} vs {want}");
 }
 

@@ -771,12 +771,12 @@ fn assemble_real<M: Curve>(
 
     let nvarys = params.no_fix_indices().len();
     // 统计按加权残差算;`residual` 字段本身保持未加权(与 `best_fit` 同口径)。
-    let (stats, covar, stderr) = match sigma {
+    let (stats, covar) = match sigma {
         Some(s) => {
             let scaled: Vec<f64> = residual.iter().zip(s).map(|(r, si)| r / si).collect();
-            finish(&model, &params, nvarys, &scaled, jac_for_cov)
+            finish(&model, &mut params, nvarys, &scaled, jac_for_cov)
         }
-        None => finish(&model, &params, nvarys, &residual, jac_for_cov),
+        None => finish(&model, &mut params, nvarys, &residual, jac_for_cov),
     };
 
     ModelResult {
@@ -786,7 +786,6 @@ fn assemble_real<M: Curve>(
         y: y.to_vec(),
         best_fit,
         residual,
-        stderr,
         covar,
         chisqr: stats.chisqr,
         redchi: stats.redchi,
@@ -849,7 +848,7 @@ fn assemble_complex<M: ComplexCurve, X: Copy + Into<Complex64>>(
     }
 
     let nvarys = params.no_fix_indices().len();
-    let (stats, covar, stderr) = finish(&model, &params, nvarys, &real_residual, jac_for_cov);
+    let (stats, covar) = finish(&model, &mut params, nvarys, &real_residual, jac_for_cov);
 
     ComplexResult {
         model,
@@ -858,7 +857,6 @@ fn assemble_complex<M: ComplexCurve, X: Copy + Into<Complex64>>(
         y: y.to_vec(),
         best_fit,
         residual,
-        stderr,
         covar,
         chisqr: stats.chisqr,
         redchi: stats.redchi,
@@ -884,12 +882,12 @@ fn assemble_complex<M: ComplexCurve, X: Copy + Into<Complex64>>(
 /// * `model` —— 收敛点的模型,派生字段已由 `at_values` 重算;
 /// * `params` —— 已回填拟合值的参数表;`covar` —— 变参数协方差。
 ///
-/// 返回:派生参数的 `(参数下标, 标准误)` 表;非派生参数不在其中。
+/// 返回:与 `params` 同长的槽位表,非派生参数处为 `None`。
 fn derive_stderr<M: ModelParams>(
     model: &M,
     params: &Parameters,
     covar: &Covariance,
-) -> Vec<(usize, f64)> {
+) -> Vec<Option<f64>> {
     // 变参数的序即协方差矩阵的序,与 `no_fix_indices` 一致。
     let varying: Vec<(usize, &Parameter)> = params
         .iter()
@@ -897,7 +895,7 @@ fn derive_stderr<M: ModelParams>(
         .filter(|entry| entry.1.vary)
         .collect();
     let base = params.values();
-    let mut out = Vec::new();
+    let mut out = vec![None; params.len()];
 
     for (d, p) in params.iter().enumerate() {
         if !p.derive {
@@ -911,7 +909,7 @@ fn derive_stderr<M: ModelParams>(
                     // fit_core 已对同一批参数校验过变换,此处不可达;真发生时
                     // 不写任何派生标准误,而不是写下可疑的数。
                     debug_assert!(false, "变参数变换在传播时失败: {err:?}");
-                    return Vec::new();
+                    return vec![None; params.len()];
                 }
             };
             let theta = base[v];
@@ -943,7 +941,7 @@ fn derive_stderr<M: ModelParams>(
             true => 0.0,
             false => var,
         };
-        out.push((d, var.sqrt()));
+        out[d] = Some(var.sqrt());
     }
     out
 }
@@ -951,18 +949,18 @@ fn derive_stderr<M: ModelParams>(
 /// 统计量、协方差与标准误的共享计算:实数与复数装配壳共用。
 ///
 /// * `model` —— 收敛点的模型(派生标准误的传播要重新构造它);
-///   `params` —— 已回填拟合值的参数表;`nvarys` —— 变参数个数。
+///   `params` —— 已回填拟合值的参数表,标准误就地写入其中;`nvarys` —— 变参数个数。
 /// * `real_residual` —— 实数残差(复数按实部、虚部交错)。
 /// * `jac_for_cov` —— 最终雅可比与梯度因子,不可得时为 None。
 ///
-/// 返回:统计量、协方差与逐参数标准误(固定参数与无协方差时为 None)。
+/// 返回:统计量与协方差;标准误写在 `params` 的对应项上(固定参数与无协方差时为 None)。
 fn finish<M: ModelParams>(
     model: &M,
-    params: &Parameters,
+    params: &mut Parameters,
     nvarys: usize,
     real_residual: &[f64],
     jac_for_cov: Option<(Vec<f64>, Vec<f64>)>,
-) -> (Statistics, Option<Covariance>, Vec<Option<f64>>) {
+) -> (Statistics, Option<Covariance>) {
     let stats = statistics(real_residual, nvarys);
 
     // 协方差与标准误:雅可比不可得或不可信时全部为 None。
@@ -970,25 +968,28 @@ fn finish<M: ModelParams>(
         Some((jac, gradients)) => covariance(jac, stats.redchi, gradients),
         None => None,
     };
-    let mut stderr: Vec<Option<f64>> = vec![None; params.len()];
     match &covar {
         Some(c) => {
             let se = c.stderr();
             let mut k = 0;
-            for (i, p) in params.iter().enumerate() {
+            for p in params.iter_mut() {
                 if p.vary {
-                    stderr[i] = Some(se[k]);
+                    p.stderr = Some(se[k]);
                     k += 1;
                 }
             }
             // 派生量的标准误不是自由度的函数,而是变参数协方差的函数。
-            for (i, se) in derive_stderr(model, params, c) {
-                stderr[i] = Some(se);
+            let std_from_drv = derive_stderr(model, params, c);
+            for (p, extra) in params.iter_mut().zip(std_from_drv) {
+                match extra {
+                    Some(value) => p.stderr = Some(value),
+                    None => {}
+                }
             }
         }
         None => {}
     }
-    (stats, covar, stderr)
+    (stats, covar)
 }
 
 /// Translate the solver's termination reason into a success flag and a message.

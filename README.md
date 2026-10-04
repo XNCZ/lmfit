@@ -126,7 +126,7 @@ bounds and starting points, the curve, the residuals, and the usual statistics.
 | Field | Meaning |
 | --- | --- |
 | `model` | the fitted model — its fields are the parameter values |
-| `params` | the fitted `Parameter`s, with bounds and starting values |
+| `params` | the fitted `Parameter`s, with bounds, starting values and standard errors |
 | `best_fit` | the model evaluated at `x` |
 | `residual` | `y - best_fit` |
 | `chisqr`, `redchi` | sum of squared residuals, and it divided by `nfree` |

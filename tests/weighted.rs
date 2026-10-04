@@ -157,15 +157,11 @@ fn uniform_sigma_only_rescales_the_statistics() {
 
     assert!((plain.model.slope - weighted.model.slope).abs() < 1e-10);
     assert!((plain.chisqr - weighted.chisqr * 0.25 * 0.25).abs() < 1e-10);
-    match (&plain.stderr, &weighted.stderr) {
-        (a, b) => {
-            for (i, (sa, sb)) in a.iter().zip(b).enumerate() {
-                match (sa, sb) {
-                    (Some(va), Some(vb)) => assert!((va - vb).abs() < 1e-10, "stderr[{i}]"),
-                    (None, None) => {}
-                    (x, y) => panic!("stderr[{i}] 口径不一致: {x:?} vs {y:?}"),
-                }
-            }
+    for (i, (a, b)) in plain.params.iter().zip(weighted.params.iter()).enumerate() {
+        match (a.stderr, b.stderr) {
+            (Some(va), Some(vb)) => assert!((va - vb).abs() < 1e-10, "stderr[{i}]"),
+            (None, None) => {}
+            (x, y) => panic!("stderr[{i}] 口径不一致: {x:?} vs {y:?}"),
         }
     }
 }

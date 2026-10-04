@@ -459,13 +459,16 @@ fn stderr_is_some_for_varied_and_none_for_fixed() {
         Ok(r) => r,
         Err(e) => panic!("fit failed: {e}"),
     };
-    assert_eq!(result.stderr.len(), 3);
-    assert!(result.stderr[0].is_none(), "固定参数应为 None");
-    match result.stderr[1] {
+    assert_eq!(result.params.len(), 3);
+    let stderr_of = |name: &str| -> Option<f64> {
+        result.params.get(name).expect("参数在表内").stderr
+    };
+    assert!(stderr_of("amp").is_none(), "固定参数应为 None");
+    match stderr_of("cen") {
         Some(s) => assert!(s > 0.0),
         None => panic!("变参数应有 stderr"),
     }
-    match result.stderr[2] {
+    match stderr_of("wid") {
         Some(s) => assert!(s > 0.0),
         None => panic!("变参数应有 stderr"),
     }
@@ -487,7 +490,7 @@ fn nothing_to_vary_reports_no_stderr() {
     };
     assert!(result.success);
     assert_eq!(result.nfev, 0);
-    assert!(result.stderr.iter().all(|s| s.is_none()));
+    assert!(result.params.iter().all(|p| p.stderr.is_none()));
     assert!(result.covar.is_none());
 }
 

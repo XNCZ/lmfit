@@ -121,9 +121,9 @@ fn stderr_is_some_for_varied_complex_fit() {
         Err(e) => panic!("fit failed: {e}"),
     };
 
-    for (i, se) in result.stderr.iter().enumerate() {
-        match se {
-            Some(s) => assert!(*s > 0.0, "stderr[{i}] = {s}"),
+    for (i, p) in result.params.iter().enumerate() {
+        match p.stderr {
+            Some(s) => assert!(s > 0.0, "stderr[{i}] = {s}"),
             None => panic!("stderr[{i}] 应为 Some"),
         }
     }

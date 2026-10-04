@@ -70,8 +70,6 @@ pub(crate) struct ReportParts<'a> {
     pub model_name: &'a str,
     /// 参数表(含起始值与固定标记)。
     pub params: &'a Parameters,
-    /// 逐参数标准误,固定参数为 None。
-    pub stderr: &'a [Option<f64>],
     /// 变参数协方差,不可得时为 None。
     pub covar: Option<&'a Covariance>,
     /// 拟合是否达到收敛判据;报告仅在失败时展开原因。
@@ -159,10 +157,9 @@ fn handle_variables(parts: &ReportParts<'_>, out: &mut String) {
 
     // value 与 stderr 两列各自按实测最宽对齐,使 (init/(fix/(derive 标记同列。
     let value_strs: Vec<String> = params.iter().map(|p| gformat(p.value)).collect();
-    let se_strs: Vec<String> = parts
-        .stderr
+    let se_strs: Vec<String> = params
         .iter()
-        .map(|se| match se {
+        .map(|p| match &p.stderr {
             Some(s) => format!("+/- {}", gformat(*s)),
             None => String::new(),
         })
@@ -263,7 +260,6 @@ impl<M: ModelParams> fmt::Display for ModelResult<M> {
         f.write_str(&render(ReportParts {
             model_name: M::MODEL_NAME,
             params: &self.params,
-            stderr: &self.stderr,
             covar: self.covar.as_ref(),
             success: self.success,
             message: &self.message,
@@ -289,7 +285,6 @@ impl<M: ModelParams> fmt::Display for ComplexResult<M> {
         f.write_str(&render(ReportParts {
             model_name: M::MODEL_NAME,
             params: &self.params,
-            stderr: &self.stderr,
             covar: self.covar.as_ref(),
             success: self.success,
             message: &self.message,

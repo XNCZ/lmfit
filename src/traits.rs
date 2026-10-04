@@ -124,6 +124,7 @@ pub trait ModelParams {
             params.push(Parameter {
                 name: spec.name,
                 value: spec.value,
+                stderr: None,
                 min: spec.min,
                 max: spec.max,
                 vary: spec.vary,
