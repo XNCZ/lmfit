@@ -9,7 +9,8 @@ Models come in two kinds — real (`Curve`) and complex (`ComplexCurve`) — and
 Jacobian comes one of two ways: differenced automatically, one probe per
 parameter, or supplied exactly through `partials_at`. Both choices are per
 model, and the examples below show each of the model kinds and both Jacobian
-routes.
+routes. The data has a choice of its own — observations bound into points, or
+the same numbers as parallel slices.
 
 ```rust
 use lmfit::{Curve, Model};
@@ -48,6 +49,57 @@ fn main() -> Result<(), lmfit::Error> {
     Ok(())
 }
 ```
+
+## Two ways to hand over data
+
+A fit takes the data as a single argument. The same observations can arrive
+either bound into points or as parallel slices, and both work everywhere:
+
+```rust
+use lmfit::{Curve, Dat, Model, Sigma};
+
+#[derive(Model)]
+struct Line {
+    #[param(value = 1.0)]
+    slope: f64,
+    #[param(value = 0.0)]
+    intercept: f64,
+}
+
+impl Curve for Line {
+    fn eval(&self, x: f64) -> f64 {
+        self.slope * x + self.intercept
+    }
+}
+
+fn main() -> Result<(), lmfit::Error> {
+    let x = vec![0.0, 1.0, 2.0, 3.0];
+    let y = vec![1.0, 3.0, 5.0, 7.0];
+    let sigma = vec![0.05, 0.2, 0.05, 0.2];
+
+    // Points, each carrying its own uncertainty — no positional ambiguity.
+    let pts: Vec<Dat<Sigma>> = (0..x.len())
+        .map(|i| Dat::with_sigma(x[i], y[i], sigma[i]))
+        .collect();
+    Line::default().fit(&pts)?;
+
+    // Parallel slices, in the order (y, x) and (y, x, sigma).
+    Line::default().fit((&y, &x))?;
+    Line::default().fit((&y, &x, &sigma))?;
+    Ok(())
+}
+```
+
+**The tuple order is `(y, x)` — observation first** — and getting it backwards
+does not error. Both are `&[f64]` of the same length, so the fit simply
+converges, quickly and confidently, on a transposed problem. `Dat` has no such
+ambiguity; reach for it when in doubt.
+
+Whether a fit is weighted is then a property of the *data* rather than a
+separate method: σ bound into the points, or handed over as the third slice,
+makes it a weighted fit, and leaving σ out makes the very same call an ordinary
+least-squares fit. The choice is settled at compile time — the unweighted path
+contains no division at all.
 
 ## Line shapes combine by arithmetic
 
@@ -127,8 +179,9 @@ bounds and starting points, the curve, the residuals, and the usual statistics.
 | --- | --- |
 | `model` | the fitted model — its fields are the parameter values |
 | `params` | the fitted `Parameter`s, with bounds, starting values and standard errors |
-| `best_fit` | the model evaluated at `x` |
-| `residual` | `y - best_fit` |
+| `data` | the observations, point by point — `data[i].x`, `.y`, `.sigma()` |
+| `best_fit` | the model evaluated at each point's `x` |
+| `residual` | `y - best_fit`, one entry per point — raw, never weighted |
 | `chisqr`, `redchi` | sum of squared residuals, and it divided by `nfree` |
 | `aic`, `bic` | Akaike and Bayesian information criteria |
 | `ndata`, `nvarys`, `nfree` | data points, varied parameters, degrees of freedom |
@@ -163,7 +216,7 @@ fn main() -> Result<(), lmfit::Error> {
     let result = Gaussian::default().fit((&y, &x))?;
 
     // Fitted values are the model's fields.
-    println!("amplitude = {}", result.model.amplitude);
+    println!("amp = {}", result.model.amp);
     println!("chi-square = {}, reduced = {}", result.chisqr, result.redchi);
     println!("converged: {} ({})", result.success, result.message);
 
@@ -240,6 +293,16 @@ at all. A model can instead hand the solver exact partial derivatives. Write
 ```rust
 use lmfit::{Curve, Model, PartialValues};
 
+#[derive(Model)]
+struct Gaussian {
+    #[param(value = 5.0)]
+    amp: f64,
+    #[param(value = 5.0)]
+    cen: f64,
+    #[param(value = 2.0, min = 0.0)]
+    wid: f64,
+}
+
 impl Curve for Gaussian {
     fn eval(&self, x: f64) -> f64 {
         self.amp * (-(x - self.cen).powi(2) / self.wid).exp()
@@ -299,8 +362,8 @@ fn main() -> Result<(), lmfit::Error> {
 What changes: `chisqr` and `redchi` are the weighted sums `Σ((y−f)/σ)²`, and the
 covariance follows them through the usual `(JᵀJ)⁻¹·redchi`. What does not:
 `residual` stays the raw `y − f`, and a fit whose σ are all equal gives exactly
-the same parameters and error bars as `fit` — only the reported statistics are
-rescaled. Complex data takes one σ per complex point, weighting the real and
+the same parameters and error bars as an unweighted one — only the reported
+statistics are rescaled. Complex data takes one σ per complex point, weighting the real and
 imaginary parts alike (the same convention as `numpy.std` on a complex array).
 
 ## Derived parameters

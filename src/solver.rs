@@ -157,16 +157,17 @@ impl<M: Curve, S: DataSet> ResidualSrc<M, f64> for RealSrc<S> {
         out: &mut [f64],
     ) -> bool {
         nfev.set(nfev.get() + 1);
-        for i in 0..self.0.len() {
-            let (x, y, w) = self.0.point(i);
+        // `nslots() == npoints()`,所以按输出走与按数据点走是同一趟。
+        for (idx, slot) in out.iter_mut().enumerate() {
+            let (x, y, w) = self.0.point(idx);
             let r = w.weigh(y - model.eval(x));
             if !r.is_finite() {
                 if nonfinite_at.get().is_none() {
-                    nonfinite_at.set(Some(i));
+                    nonfinite_at.set(Some(idx));
                 }
                 return false;
             }
-            out[i] = r;
+            *slot = r;
         }
         true
     }
