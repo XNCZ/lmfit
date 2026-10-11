@@ -22,7 +22,7 @@ fn a_certain_point_pins_the_line() {
     let x = vec![0.0, 1.0, 2.0];
     let y = vec![0.0, 2.0, 5.0];
 
-    let plain = Line::default().fit(&y, &x).expect("fit ran");
+    let plain = Line::default().fit((&y, &x)).expect("fit ran");
     assert!(
         plain.model.intercept.abs() > 0.1,
         "不加权时截距本应被后两点拉走,实际 = {}",
@@ -30,7 +30,7 @@ fn a_certain_point_pins_the_line() {
     );
 
     let sigma = vec![1.0e-4, 1.0, 1.0];
-    let weighted = Line::default().fit_sigma(&y, &x, &sigma).expect("fit ran");
+    let weighted = Line::default().fit((&y, &x, &sigma)).expect("fit ran");
     assert!(
         weighted.model.intercept.abs() < 1.0e-3,
         "加权后直线应几乎穿过 (0, 0),实际截距 = {}",
@@ -95,7 +95,7 @@ fn weighted_line_matches_the_closed_form() {
     let slope = (sw * sxy - sx * sy) / det;
     let intercept = (sxx * sy - sx * sxy) / det;
 
-    let r = Line::default().fit_sigma(&y, &x, &sigma).expect("fit ran");
+    let r = Line::default().fit((&y, &x, &sigma)).expect("fit ran");
     assert!((r.model.slope - slope).abs() < 1e-10, "{} vs {slope}", r.model.slope);
     assert!(
         (r.model.intercept - intercept).abs() < 1e-10,
@@ -123,8 +123,8 @@ fn analytic_and_finite_difference_paths_agree_under_weights() {
     let y = vec![0.1, 2.4, 4.2, 7.1, 8.0];
     let sigma = vec![1.0, 0.05, 1.0, 0.05, 1.0];
 
-    let fd = FdLine::default().fit_sigma(&y, &x, &sigma).expect("fd fit");
-    let an = AnLine::default().fit_sigma(&y, &x, &sigma).expect("an fit");
+    let fd = FdLine::default().fit((&y, &x, &sigma)).expect("fd fit");
+    let an = AnLine::default().fit((&y, &x, &sigma)).expect("an fit");
 
     // 两条路必须落在同一个极小点上:χ² 是目标函数,可严判;参数受停止容差影响,
     // 在平坦极小值上本就有 ~1e-9 的抖动,故放到 1e-7。漏乘 1/σ 时 χ² 会差 O(1)。
@@ -150,9 +150,9 @@ fn uniform_sigma_only_rescales_the_statistics() {
     let y = vec![1.0, 3.1, 5.2, 6.9];
     let sigma = vec![0.25; 4];
 
-    let plain = Line::default().fit(&y, &x).expect("fit ran");
+    let plain = Line::default().fit((&y, &x)).expect("fit ran");
     let weighted = Line::default()
-        .fit_sigma(&y, &x, &sigma)
+        .fit((&y, &x, &sigma))
         .expect("fit ran");
 
     assert!((plain.model.slope - weighted.model.slope).abs() < 1e-10);
@@ -246,10 +246,10 @@ fn complex_paths_agree_under_weights() {
     let sigma: Vec<f64> = x.iter().map(|&t| if (t - 5.0).abs() > 2.0 { 0.2 } else { 0.02 }).collect();
 
     let fd = FdComplexGaussian::default()
-        .fit_sigma(&y, &x, &sigma)
+        .fit((&y, &x, &sigma))
         .expect("fd fit");
     let an = AnComplexGaussian::default()
-        .fit_sigma(&y, &x, &sigma)
+        .fit((&y, &x, &sigma))
         .expect("an fit");
 
     assert!(
@@ -270,7 +270,7 @@ fn sigma_length_must_match_the_data() {
     let x = vec![0.0, 1.0, 2.0];
     let y = vec![0.0, 1.0, 2.0];
     let sigma = vec![1.0, 1.0];
-    match Line::default().fit_sigma(&y, &x, &sigma) {
+    match Line::default().fit((&y, &x, &sigma)) {
         Err(lmfit::Error::SigmaMismatch { npoints, sigma }) => {
             assert_eq!(npoints, 3);
             assert_eq!(sigma, 2);
@@ -286,7 +286,7 @@ fn sigma_must_be_finite_and_positive() {
     let y = vec![0.0, 1.0, 2.0];
     for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         let sigma = vec![1.0, bad, 1.0];
-        match Line::default().fit_sigma(&y, &x, &sigma) {
+        match Line::default().fit((&y, &x, &sigma)) {
             Err(lmfit::Error::InvalidSigma { index, value }) => {
                 assert_eq!(index, 1, "bad = {bad}");
                 assert_eq!(value.is_nan(), bad.is_nan(), "bad = {bad}");

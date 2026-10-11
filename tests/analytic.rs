@@ -65,14 +65,14 @@ fn analytic_partials_match_the_finite_difference_fit() {
         center: 4.0,
         sigma: 1.5,
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("fd fit ran");
     let an = AnGaussian {
         amplitude: 3.0,
         center: 4.0,
         sigma: 1.5,
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("analytic fit ran");
 
     assert!(fd.success, "{}", fd.message);
@@ -142,14 +142,14 @@ fn analytic_partials_respect_bounds() {
         center: 6.5,
         sigma: 1.5,
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("fd fit ran");
     let an = AnBounded {
         amplitude: 5.0,
         center: 6.5,
         sigma: 1.5,
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("analytic fit ran");
 
     assert!(fd.success && an.success);
@@ -204,14 +204,14 @@ fn a_mid_way_decline_falls_back_to_finite_difference() {
         center: 4.0,
         sigma: 1.5,
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("fd fit ran");
     let half = HalfDeclineGaussian {
         amplitude: 3.0,
         center: 4.0,
         sigma: 1.5,
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("fallback fit ran");
 
     assert!(half.success, "{}", half.message);
@@ -254,7 +254,7 @@ fn non_finite_partials_fail_the_jacobian() {
         center: 4.0,
         sigma: 1.5,
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("fit ran");
 
     assert!(!result.success, "message = {}", result.message);
@@ -342,7 +342,7 @@ fn analytic_complex_partials_match_the_finite_difference_fit() {
         sigma: 1.5,
         phase: 0.0,
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("fd fit ran");
     let an = AnComplexGaussian {
         amplitude: 4.0,
@@ -350,7 +350,7 @@ fn analytic_complex_partials_match_the_finite_difference_fit() {
         sigma: 1.5,
         phase: 0.0,
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("analytic fit ran");
 
     assert!(fd.success, "{}", fd.message);

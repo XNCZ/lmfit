@@ -242,7 +242,7 @@ fn handle_correlations(parts: &ReportParts<'_>, out: &mut String) {
 /// # }
 /// let x = vec![0.0, 1.0, 2.0, 3.0];
 /// let y = vec![1.0, 3.0, 5.0, 7.0];
-/// let result = Line::default().fit(&y, &x)?;
+/// let result = Line::default().fit((&y, &x))?;
 ///
 /// let report = result.to_string();
 /// assert!(report.contains("[[Fit Statistics]]"));

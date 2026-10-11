@@ -67,7 +67,7 @@ fn recovers_known_parameters_from_noiseless_complex_data() {
     let x = xs(101);
     let y: Vec<Complex64> = x.iter().map(|&t| truth(t)).collect();
 
-    let result = match start().fit(&y, &x) {
+    let result = match start().fit((&y, &x)) {
         Ok(r) => r,
         Err(e) => panic!("fit failed: {e}"),
     };
@@ -88,7 +88,7 @@ fn chisqr_sums_both_quadratures_and_ndata_doubles() {
     let x = xs(201);
     let y = noisy_data(&x, 0.05);
 
-    let result = match start().fit(&y, &x) {
+    let result = match start().fit((&y, &x)) {
         Ok(r) => r,
         Err(e) => panic!("fit failed: {e}"),
     };
@@ -96,10 +96,11 @@ fn chisqr_sums_both_quadratures_and_ndata_doubles() {
 
     // 口径:chisqr 为两侧平方和,ndata 为槽位数(2n)。
     let manual: f64 = result
-        .y
+        .data
         .iter()
+        .map(|p| p.y)
         .zip(&result.best_fit)
-        .map(|(observed, predicted)| (*observed - *predicted).norm_sqr())
+        .map(|(observed, predicted)| (observed - predicted).norm_sqr())
         .sum();
     assert!(
         (result.chisqr - manual).abs() <= 1e-9 * (1.0 + manual),
@@ -107,7 +108,7 @@ fn chisqr_sums_both_quadratures_and_ndata_doubles() {
         result.chisqr,
         manual
     );
-    assert_eq!(result.ndata, 2 * result.y.len());
+    assert_eq!(result.ndata, 2 * result.data.len());
     assert_eq!(result.nfree, result.ndata - result.nvarys);
 }
 
@@ -116,7 +117,7 @@ fn stderr_is_some_for_varied_complex_fit() {
     let x = xs(201);
     let y = noisy_data(&x, 0.05);
 
-    let result = match start().fit(&y, &x) {
+    let result = match start().fit((&y, &x)) {
         Ok(r) => r,
         Err(e) => panic!("fit failed: {e}"),
     };
@@ -151,7 +152,7 @@ fn a_non_finite_complex_residual_names_the_data_point() {
     let x = vec![1.0, 2.0, 5.0, 7.0];
     let y = vec![Complex64::new(0.0, 0.0); 4];
 
-    let result = match Singular::default().fit(&y, &x) {
+    let result = match Singular::default().fit((&y, &x)) {
         Ok(r) => r,
         Err(e) => panic!("fit returned an error: {e}"),
     };
@@ -169,7 +170,7 @@ fn mismatched_complex_input_is_rejected() {
     let y = vec![Complex64::new(1.0, 0.0); 3];
     let x = vec![0.0, 1.0];
 
-    let err = match ComplexGaussian::default().fit(&y, &x) {
+    let err = match ComplexGaussian::default().fit((&y, &x)) {
         Ok(_) => panic!("expected an error"),
         Err(e) => e,
     };
@@ -211,7 +212,7 @@ fn recovers_a_pole_in_the_complex_plane() {
         pole_re: 4.5,
         pole_im: 0.5,
     };
-    let result = match start.fit(&y, &x) {
+    let result = match start.fit((&y, &x)) {
         Ok(r) => r,
         Err(e) => panic!("fit failed: {e}"),
     };
@@ -239,7 +240,7 @@ fn complex_fit_report_has_all_sections_and_stderr() {
     let x = xs(201);
     let y = noisy_data(&x, 0.05);
 
-    let result = match start().fit(&y, &x) {
+    let result = match start().fit((&y, &x)) {
         Ok(r) => r,
         Err(e) => panic!("fit failed: {e}"),
     };

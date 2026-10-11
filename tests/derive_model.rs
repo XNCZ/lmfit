@@ -129,7 +129,7 @@ fn derived_model_fits_identically_to_a_hand_written_one() {
         cen: 4.0,
         wid: 1.5,
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("derived fit ran");
 
     let hand = HandGaussian {
@@ -137,7 +137,7 @@ fn derived_model_fits_identically_to_a_hand_written_one() {
         cen: 4.0,
         wid: 1.5,
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("hand fit ran");
 
     assert_eq!(derived.model.amp, hand.model.amp);
@@ -198,7 +198,7 @@ fn default_and_hand_written_models_agree_on_the_starting_point() {
     let (x, y) = gaussian_data(101, 5.0, 5.0, 2.0);
     // Starting from the defaults rather than a literal, so this also exercises
     // the generated `Default`.
-    let result = DerivedGaussian::default().fit(&y, &x).expect("fit ran");
+    let result = DerivedGaussian::default().fit((&y, &x)).expect("fit ran");
     assert!(result.success, "{}", result.message);
 
     let reported = result.params.get("amp").unwrap();
@@ -287,7 +287,7 @@ fn every_bound_and_vary_form_is_honoured() {
 #[test]
 fn bounds_and_pins_survive_a_fit() {
     let (x, y) = gaussian_data(101, 5.0, 5.0, 2.0);
-    let result = PinnedGaussian::default().fit(&y, &x).expect("fit ran");
+    let result = PinnedGaussian::default().fit((&y, &x)).expect("fit ran");
 
     assert_eq!(result.model.amp, 5.0, "pinned parameter moved");
     assert_eq!(result.nvarys, 2);
@@ -384,7 +384,7 @@ fn line_shapes_fit_a_sum_of_curves() {
         background: 0.0,
     };
 
-    let result = model.fit(&y, &x).expect("fit ran");
+    let result = model.fit((&y, &x)).expect("fit ran");
     assert!(result.success, "{}", result.message);
 
     assert!(

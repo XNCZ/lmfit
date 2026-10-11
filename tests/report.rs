@@ -60,7 +60,7 @@ fn fit_gaussian() -> ModelResult<Gaussian> {
         .iter()
         .map(|&t| 5.0 * (-(t - 5.0f64).powi(2) / 2.0).exp())
         .collect();
-    Gaussian::default().fit(&y, &x).expect("fit ran")
+    Gaussian::default().fit((&y, &x)).expect("fit ran")
 }
 
 /// Every `=` in the statistics block must sit in the same column.
@@ -107,7 +107,7 @@ fn statistics_labels_line_up() {
 fn variable_values_line_up_whatever_the_name_length() {
     let x = vec![0.0, 1.0, 2.0, 3.0, 4.0];
     let y = vec![3.0, 3.0, 3.0, 3.0, 3.0];
-    let report = Wide::default().fit(&y, &x).expect("fit ran").to_string();
+    let report = Wide::default().fit((&y, &x)).expect("fit ran").to_string();
 
     let lines: Vec<&str> = report
         .lines()
@@ -158,7 +158,7 @@ fn fixed_parameters_are_marked() {
         .map(|&t| 5.0 * (-(t - 5.0f64).powi(2) / 2.0).exp())
         .collect();
 
-    let report = Pinned::default().fit(&y, &x).expect("fit ran").to_string();
+    let report = Pinned::default().fit((&y, &x)).expect("fit ran").to_string();
 
     let amp_line = report
         .lines()
@@ -242,7 +242,7 @@ fn correlations_block_lists_qualified_pairs() {
             lmfit::lineshapes::gaussian(t, 5.0, 4.5, 0.8) + 0.25 + 0.05 * n
         })
         .collect();
-    let result = match PeakOnBackground::default().fit(&y, &x) {
+    let result = match PeakOnBackground::default().fit((&y, &x)) {
         Ok(r) => r,
         Err(e) => panic!("fit failed: {e}"),
     };
@@ -321,7 +321,7 @@ impl Curve for Exploding {
 fn failed_fit_reports_state_and_reason() {
     let x: Vec<f64> = (0..11).map(|i| i as f64).collect();
     let y: Vec<f64> = x.iter().map(|&t| t).collect();
-    let result = Exploding::default().fit(&y, &x).expect("fit returns a result");
+    let result = Exploding::default().fit((&y, &x)).expect("fit returns a result");
     assert!(!result.success, "a NaN residual cannot converge");
 
     let report = result.to_string();

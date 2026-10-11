@@ -19,7 +19,11 @@
 //! one. That is what lets the two evolve independently — a change to how
 //! parameters are stored never touches the solver, and a change of solver
 //! never touches the macro.
+//!
+//! 数据的形状([`DataSet`]、[`Dat`](crate::data::Dat)、权重
+//! 标记)不在这里,在 [`crate::data`]。这里只留"模型算什么"和"怎么把它交给求解器"。
 
+use crate::data::{ComplexDataSet, DataSet};
 use crate::error::Result;
 use crate::parameter::{Parameter, Parameters};
 use crate::result::{ComplexResult, ModelResult};
@@ -223,13 +227,13 @@ pub trait Curve: ModelParams + Sized {
         None::<NoPartials<f64>>
     }
 
-    /// Fit this model to `y` sampled at `x`.
+    /// 用 `data` 拟合本模型。
     ///
-    /// `self` supplies the starting point: the model's field values are the
-    /// initial guesses, and their bounds come from `#[param(...)]`.
+    /// `self` 的字段值是起点,边界来自 `#[param(...)]`。**带不带逐点测量不确定度
+    /// 由数据集决定,不是运行期开关**——见 [`crate::data`]。
     ///
     /// ```
-    /// use lmfit::{Curve, Model};
+    /// use lmfit::{Curve, Dat, Model};
     ///
     /// #[derive(Model)]
     /// struct Line {
@@ -242,40 +246,42 @@ pub trait Curve: ModelParams + Sized {
     ///     fn eval(&self, x: f64) -> f64 { self.slope * x + self.intercept }
     /// }
     ///
+    /// // 逐点绑定
+    /// let pts = vec![
+    ///     Dat::new(0.0, 1.0),
+    ///     Dat::new(1.0, 3.0),
+    ///     Dat::new(2.0, 5.0),
+    ///     Dat::new(3.0, 7.0),
+    /// ];
+    /// let result = Line::default().fit(pts.as_slice())?;
+    /// assert!((result.model.slope - 2.0).abs() < 1e-8);
+    ///
+    /// // 平行切片,参数序沿用旧版 `fit(y, x)`
     /// let x = vec![0.0, 1.0, 2.0, 3.0];
     /// let y = vec![1.0, 3.0, 5.0, 7.0];
-    ///
-    /// let result = Line::default().fit(&y, &x)?;
+    /// let result = Line::default().fit((&y, &x))?;
     /// assert!(result.success);
-    /// assert!((result.model.slope - 2.0).abs() < 1e-8);
     /// assert!((result.model.intercept - 1.0).abs() < 1e-8);
     /// # Ok::<(), lmfit::Error>(())
     /// ```
     ///
-    /// # Errors
+    /// 加权拟合的第一条实务配方:`sigma[i]` 是第 `i` 个观测的标准不确定度,残差
+    /// 按 `1/sigma[i]` 加权(即权重 `1/σ²`),σ 小的点牵引更强。若第 `i` 点是
+    /// `n` 次单发测量的平均,则 `sigma[i] = std(shots_i) / sqrt(n)`。
     ///
-    /// Fails if `x` and `y` differ in length, if either is empty, or if a
-    /// parameter's bounds are degenerate.
-    fn fit(&self, y: &[f64], x: &[f64]) -> Result<ModelResult<Self>> {
-        crate::solver::fit(self, y, x)
-    }
-
-    /// 以逐点测量不确定度 `sigma` 加权拟合。
+    /// # 平行切片的参数顺序是 `(y, x)`,不是 `(x, y)`
     ///
-    /// `sigma[i]` 是第 `i` 个观测 `y[i]` 的标准不确定度,残差按 `1/sigma[i]`
-    /// 加权(即权重 `1/σ²`):σ 小的点对拟合的牵引更强。`chisqr`、`redchi` 与
-    /// 协方差都按加权后的量计算;结果里的 `residual` 仍是未加权的原始残差。
-    /// 起点、边界与收敛语义与 [`Curve::fit`] 完全一致。
+    /// 观测在前,自变量在后——沿用本 crate 旧版 `fit(y, x)` 的顺序。
     ///
-    /// 一个实务配方:若第 `i` 点是 `n` 次单发测量的平均,则
-    /// `sigma[i] = std(shots_i) / sqrt(n)`。
+    /// **写反了不会报错。** 两侧都是 `&[f64]` 且长度相同,于是它安静地拟合一个
+    /// 转置了的问题,给出一个收敛得很好的、错的答案。这是把两个参数换成一个元组
+    /// 换来的代价:[`Dat`](crate::data::Dat) 那条路没有位置歧义,拿不准时用它。
     ///
     /// # Errors
     ///
-    /// 与 [`Curve::fit`] 相同,另加两条:`sigma` 长度与数据点数不符,或某项
-    /// 不是有限的正数。
-    fn fit_sigma(&self, y: &[f64], x: &[f64], sigma: &[f64]) -> Result<ModelResult<Self>> {
-        crate::solver::fit_sigma(self, y, x, sigma)
+    /// 数据集为空、不自洽(见 [`DataSet::validate`]),或某个参数的边界退化时报错。
+    fn fit<S: DataSet>(&self, data: S) -> Result<ModelResult<Self>> {
+        crate::solver::fit(self, data)
     }
 }
 
@@ -298,35 +304,38 @@ pub trait ComplexCurve: ModelParams + Sized {
         None::<NoPartials<Complex64>>
     }
 
-    /// 以复数观测 `y` 拟合本模型;自变量 `x` 可实可复。
+    /// 用 `data` 拟合本模型;自变量可实可复。
     ///
-    /// `self` 提供起点,语义与 [`Curve::fit`] 一致。
+    /// `self` 提供起点,语义与 [`Curve::fit`] 一致。加权时每个复频点一个 `σ`,
+    /// 实部与虚部同权(与 numpy 对复数数组取 `std` 的口径一致)。
+    ///
+    /// ```
+    /// use lmfit::{Complex64, ComplexCurve, ComplexDat, Model};
+    ///
+    /// #[derive(Model)]
+    /// struct Gain {
+    ///     #[param(value = 1.0)]
+    ///     amp: f64,
+    /// }
+    /// impl ComplexCurve for Gain {
+    ///     fn eval(&self, x: Complex64) -> Complex64 { Complex64::new(self.amp, 0.0) * x }
+    /// }
+    ///
+    /// let pts = vec![
+    ///     ComplexDat::new(0.0, Complex64::new(0.0, 0.0)),
+    ///     ComplexDat::new(1.0, Complex64::new(2.0, 0.1)),
+    ///     ComplexDat::new(2.0, Complex64::new(4.0, -0.1)),
+    /// ];
+    /// let result = Gain::default().fit(pts.as_slice())?;
+    /// assert!(result.success);
+    /// assert!((result.model.amp - 2.0).abs() < 1e-2);
+    /// # Ok::<(), lmfit::Error>(())
+    /// ```
     ///
     /// # Errors
     ///
-    /// 与 [`Curve::fit`] 相同:长度不符、数据为空或参数界退化时报错。
-    fn fit<X: Copy + Into<Complex64>>(
-        &self,
-        y: &[Complex64],
-        x: &[X],
-    ) -> Result<ComplexResult<Self>> {
-        crate::solver::fit_complex(self, y, x)
-    }
-
-    /// 以逐点测量不确定度 `sigma` 加权拟合复数数据。
-    ///
-    /// 每个复频点一个 `sigma`,实部与虚部同权(与 numpy 对复数数组取 `std` 的
-    /// 口径一致);其余语义与 [`Curve::fit_sigma`] 相同。
-    ///
-    /// # Errors
-    ///
-    /// 与 [`ComplexCurve::fit`] 相同,另加 `sigma` 的两个校验错误。
-    fn fit_sigma<X: Copy + Into<Complex64>>(
-        &self,
-        y: &[Complex64],
-        x: &[X],
-        sigma: &[f64],
-    ) -> Result<ComplexResult<Self>> {
-        crate::solver::fit_complex_sigma(self, y, x, sigma)
+    /// 与 [`Curve::fit`] 相同。
+    fn fit<S: ComplexDataSet>(&self, data: S) -> Result<ComplexResult<Self>> {
+        crate::solver::fit_complex(self, data)
     }
 }

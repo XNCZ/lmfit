@@ -38,7 +38,7 @@ fn main() -> Result<(), lmfit::Error> {
         .collect();
 
     // The starting point is the struct's field values.
-    let result = Gaussian { amp: 4.0, cen: 4.0, wid: 1.5 }.fit(&y, &x)?;
+    let result = Gaussian { amp: 4.0, cen: 4.0, wid: 1.5 }.fit((&y, &x))?;
 
     assert!((result.model.amp - 5.0).abs() < 1e-6);
     assert!((result.model.cen - 5.0).abs() < 1e-6);
@@ -88,7 +88,7 @@ fn main() -> Result<(), lmfit::Error> {
         .collect();
 
     let result = PeakOnBackground { amplitude: 4.0, center: 4.0, sigma: 1.5, background: 0.0 }
-        .fit(&y, &x)?;
+        .fit((&y, &x))?;
 
     println!("area       = {}", result.model.amplitude);
     println!("background = {}", result.model.background);
@@ -160,7 +160,7 @@ fn main() -> Result<(), lmfit::Error> {
         .iter()
         .map(|&t| 5.0 * (-(t - 5.0f64).powi(2) / 2.0).exp())
         .collect();
-    let result = Gaussian::default().fit(&y, &x)?;
+    let result = Gaussian::default().fit((&y, &x))?;
 
     // Fitted values are the model's fields.
     println!("amplitude = {}", result.model.amplitude);
@@ -219,7 +219,7 @@ fn main() -> Result<(), lmfit::Error> {
         .collect();
 
     let result =
-        ComplexGaussian { amplitude: 4.0, center: 4.0, sigma: 1.5, phase: 0.0 }.fit(&y, &x)?;
+        ComplexGaussian { amplitude: 4.0, center: 4.0, sigma: 1.5, phase: 0.0 }.fit((&y, &x))?;
 
     assert!((result.model.amplitude - 5.0).abs() < 1e-6);
     assert!((result.model.phase - 0.3).abs() < 1e-6);
@@ -263,8 +263,9 @@ far fewer.
 
 ## Uncertainties
 
-`fit_sigma` takes one standard uncertainty per data point and weights the fit by
-`1/σ²`, so points that are known precisely pull harder:
+Carrying a standard uncertainty on each point — bound into the point itself
+(`Dat::with_sigma`), or as a third parallel slice — weights the fit by `1/σ²`,
+so points that are known precisely pull harder:
 
 ```rust
 use lmfit::{Curve, Model};
@@ -289,7 +290,7 @@ fn main() -> Result<(), lmfit::Error> {
     // 每点的单发散度除以 sqrt(单发次数):均值的不确定度。
     let sigma = vec![0.05, 0.2, 0.05, 0.2];
 
-    let result = Line::default().fit_sigma(&y, &x, &sigma)?;
+    let result = Line::default().fit((&y, &x, &sigma))?;
     println!("{result}");
     Ok(())
 }
@@ -376,6 +377,7 @@ one, and neither knows about the other.
 | Module | Role |
 | --- | --- |
 | `traits` | `ModelParams` (layout) and `Curve`/`ComplexCurve` (arithmetic) — the seam |
+| `data` | `Dat` and `DataSet` — the shape of the observations, and whether they carry σ |
 | `bounds` | lmfit's bounded-parameter transform |
 | `solver` | the LM adapter; the only module that knows the solver exists |
 | `numerics` | finite-difference Jacobian |

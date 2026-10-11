@@ -24,7 +24,7 @@
 /// #     .map(|&t| 5.0 / (std::f64::consts::TAU.sqrt() * 2.0)
 /// #         * (-(t - 5.0f64).powi(2) / 8.0).exp() + 0.75)
 /// #     .collect();
-/// let result = Peak::default().fit(&y, &x)?;
+/// let result = Peak::default().fit((&y, &x))?;
 ///
 /// assert!((result.model.background - 0.75).abs() < 1e-6);
 /// # Ok::<(), lmfit::Error>(())

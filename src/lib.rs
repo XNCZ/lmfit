@@ -26,7 +26,7 @@
 //!
 //! # let x: Vec<f64> = (0..101).map(|i| i as f64 / 10.0).collect();
 //! # let y: Vec<f64> = x.iter().map(|&t| 5.0 * (-(t - 5.0f64).powi(2) / 2.0).exp()).collect();
-//! let result = Gaussian { amp: 4.0, cen: 4.0, wid: 1.5 }.fit(&y, &x)?;
+//! let result = Gaussian { amp: 4.0, cen: 4.0, wid: 1.5 }.fit((&y, &x))?;
 //!
 //! // Fitted values are the model's fields, not string lookups.
 //! assert!((result.model.amp - 5.0).abs() < 1e-6);
@@ -66,7 +66,7 @@
 //!     sigma: 1.5,
 //!     background: 0.0,
 //! }
-//! .fit(&y, &x)?;
+//! .fit((&y, &x))?;
 //!
 //! assert!((result.model.background - 0.75).abs() < 1e-6);
 //! assert!((result.model.center - 5.0).abs() < 1e-6);
@@ -79,6 +79,7 @@
 extern crate self as lmfit;
 
 pub mod bounds;
+pub mod data;
 pub mod error;
 pub mod lineshapes;
 pub mod numerics;
@@ -89,6 +90,7 @@ pub mod solver;
 pub mod traits;
 
 pub use bounds::Transform;
+pub use data::{ComplexDat, ComplexDataSet, DataSet, Dat, NoSigma, Sigma, Weight};
 pub use error::{Error, Result};
 pub use num_complex::Complex64;
 pub use parameter::{Parameter, Parameters};

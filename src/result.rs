@@ -5,6 +5,7 @@
 //! without a solver in the loop — and lets a future second solver reuse it
 //! unchanged.
 
+use crate::data::{ComplexDat, Dat, Sigma};
 use crate::parameter::Parameters;
 use num_complex::Complex64;
 
@@ -20,12 +21,16 @@ pub struct ModelResult<M> {
     /// not.
     pub params: Parameters,
 
-    /// The independent variable the fit was given.
-    pub x: Vec<f64>,
-    /// The dependent variable the fit was given.
-    pub y: Vec<f64>,
+    /// The data the fit was given, point by point — the same shape it went in as.
+    ///
+    /// σ 统一归一化成 [`Sigma`]:不加权的输入在这里读出来是 `1.0`。于是
+    /// `data[i].sigma()` 永远是这次拟合实际用到的那个权重,不必回看输入。
+    pub data: Vec<Dat<Sigma>>,
 
-    /// The model evaluated at `x` with the fitted parameters.
+    /// The model evaluated at each point's `x` with the fitted parameters.
+    ///
+    /// 与 [`residual`](Self::residual) 同口径,故 `residual[i] == data[i].y - best_fit[i]`
+    /// 恒成立——加权时也一样,加权只进统计量。
     pub best_fit: Vec<f64>,
     /// `y - best_fit`, one entry per data point.
     pub residual: Vec<f64>,
@@ -70,7 +75,7 @@ pub struct ModelResult<M> {
 
 /// Everything a completed complex fit produced.
 ///
-/// 字段镜像 [`ModelResult`],`y`/`best_fit`/`residual` 为复数;复数残差按
+/// 字段镜像 [`ModelResult`],`best_fit`/`residual` 为复数;复数残差按
 /// 实部、虚部逐点交错进入统计(与 lmfit 对齐):`chisqr = Σ|r_i|²`,
 /// `ndata = 2n`(数据点数的两倍,lmfit 口径),`nfree = ndata - nvarys`。
 #[derive(Debug, Clone, PartialEq)]
@@ -83,12 +88,12 @@ pub struct ComplexResult<M> {
     /// not.
     pub params: Parameters,
 
-    /// The complex independent variable the fit was given(实自变量以虚部 0 嵌入)。
-    pub x: Vec<Complex64>,
-    /// The complex dependent variable the fit was given.
-    pub y: Vec<Complex64>,
+    /// The data the fit was given, point by point.
+    ///
+    /// `x` 归一化为 [`Complex64`];σ 同 [`ModelResult`],统一归一化成 [`Sigma`]。
+    pub data: Vec<ComplexDat<Sigma, Complex64>>,
 
-    /// The model evaluated at `x` with the fitted parameters.
+    /// The model evaluated at each point's `x` with the fitted parameters.
     pub best_fit: Vec<Complex64>,
     /// `y - best_fit`, one entry per data point.
     pub residual: Vec<Complex64>,

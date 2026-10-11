@@ -56,7 +56,7 @@ fn main() -> Result<(), Error> {
         background: 0.0,
     };
 
-    let result = model.fit(&y, &x)?;
+    let result = model.fit((&y, &x))?;
 
     println!("{result}");
 

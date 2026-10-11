@@ -166,7 +166,7 @@ fn median_us<M: Curve>(model: &M, y: &[f64], x: &[f64]) -> (f64, usize) {
     let mut nfev = 0;
     for _ in 0..REPS {
         let started = Instant::now();
-        let r = model.fit(y, x).expect("拟合");
+        let r = model.fit((y, x)).expect("拟合");
         times.push(started.elapsed().as_secs_f64() * 1.0e6);
         nfev = r.nfev;
     }

@@ -139,7 +139,7 @@ fn start() -> Gaussian {
 fn recovers_known_parameters_from_noiseless_data() {
     let (x, y) = data(101, 0.0, 5.0, 5.0, 2.0);
 
-    let result = start().fit(&y, &x).expect("fit ran");
+    let result = start().fit((&y, &x)).expect("fit ran");
 
     assert!(result.success, "fit failed: {}", result.message);
     assert!(
@@ -171,7 +171,7 @@ fn recovers_known_parameters_from_noiseless_data() {
 fn recovers_known_parameters_from_noisy_data() {
     let (x, y) = data(201, 0.2, 5.0, 5.0, 2.0);
 
-    let result = start().fit(&y, &x).expect("fit ran");
+    let result = start().fit((&y, &x)).expect("fit ran");
 
     assert!(result.success, "fit failed: {}", result.message);
     assert!(
@@ -191,11 +191,11 @@ fn recovers_known_parameters_from_noisy_data() {
     );
 
     // The curve and residual must be consistent with the reported parameters.
-    assert_eq!(result.best_fit.len(), result.y.len());
-    assert_eq!(result.residual.len(), result.y.len());
-    for i in 0..result.y.len() {
+    assert_eq!(result.best_fit.len(), result.data.len());
+    assert_eq!(result.residual.len(), result.data.len());
+    for i in 0..result.data.len() {
         assert!(
-            (result.residual[i] - (result.y[i] - result.best_fit[i])).abs() < 1e-12,
+            (result.residual[i] - (result.data[i].y - result.best_fit[i])).abs() < 1e-12,
             "residual {i} disagrees with y - best_fit"
         );
     }
@@ -205,7 +205,7 @@ fn recovers_known_parameters_from_noisy_data() {
 #[test]
 fn statistics_are_internally_consistent() {
     let (x, y) = data(201, 0.2, 5.0, 5.0, 2.0);
-    let result = start().fit(&y, &x).expect("fit ran");
+    let result = start().fit((&y, &x)).expect("fit ran");
 
     let summed: f64 = result.residual.iter().map(|r| r * r).sum();
     assert!(
@@ -227,7 +227,7 @@ fn statistics_are_internally_consistent() {
 #[test]
 fn fitted_model_reproduces_the_curve() {
     let (x, y) = data(101, 0.1, 4.0, 6.0, 3.0);
-    let result = Gaussian::new(4.0, 5.0, 3.0).fit(&y, &x).expect("fit ran");
+    let result = Gaussian::new(4.0, 5.0, 3.0).fit((&y, &x)).expect("fit ran");
 
     for (i, &xi) in x.iter().enumerate() {
         let from_model = result.model.eval(xi);
@@ -260,7 +260,7 @@ fn bounds_pin_a_parameter_that_cannot_reach_the_optimum() {
         cen_min: 5.5,
     };
 
-    let result = model.fit(&y, &x).expect("fit ran");
+    let result = model.fit((&y, &x)).expect("fit ran");
 
     assert!(
         result.model.inner.cen >= 5.5 - 1e-9,
@@ -292,7 +292,7 @@ fn interior_bounds_leave_the_optimum_alone() {
         cen_min: 2.0,
     };
 
-    let result = model.fit(&y, &x).expect("fit ran");
+    let result = model.fit((&y, &x)).expect("fit ran");
 
     assert!(result.success, "fit failed: {}", result.message);
     assert!(
@@ -349,7 +349,7 @@ fn fixed_parameters_are_left_alone() {
     let model = FixedAmp {
         inner: Gaussian::new(1.0, 4.0, 1.5),
     };
-    let result = model.fit(&y, &x).expect("fit ran");
+    let result = model.fit((&y, &x)).expect("fit ran");
 
     assert_eq!(result.model.inner.amp, 1.0, "a fixed value was moved");
     assert_eq!(result.nvarys, 2);
@@ -400,13 +400,13 @@ impl Curve for FixedAmp {
 #[test]
 fn mismatched_input_is_rejected() {
     let model = Gaussian::new(1.0, 1.0, 1.0);
-    let err = model.fit(&[1.0, 2.0, 3.0], &[1.0, 2.0]).unwrap_err();
+    let err = model.fit((&[1.0, 2.0, 3.0], &[1.0, 2.0])).unwrap_err();
     assert!(matches!(
         err,
         lmfit::Error::DimensionMismatch { x: 2, y: 3 }
     ));
 
-    let err = model.fit(&[], &[]).unwrap_err();
+    let err = model.fit((&[], &[])).unwrap_err();
     assert!(matches!(
         err,
         lmfit::Error::TooFewDataPoints { ndata: 0, .. }
@@ -455,7 +455,7 @@ fn stderr_is_some_for_varied_and_none_for_fixed() {
     let model = FixedAmp {
         inner: Gaussian::new(1.0, 4.0, 1.5),
     };
-    let result = match model.fit(&y, &x) {
+    let result = match model.fit((&y, &x)) {
         Ok(r) => r,
         Err(e) => panic!("fit failed: {e}"),
     };
@@ -484,7 +484,7 @@ fn nothing_to_vary_reports_no_stderr() {
     let model = AllFixed {
         inner: Gaussian::new(5.0, 5.0, 2.0),
     };
-    let result = match model.fit(&y, &x) {
+    let result = match model.fit((&y, &x)) {
         Ok(r) => r,
         Err(e) => panic!("fit failed: {e}"),
     };
@@ -499,6 +499,6 @@ fn nothing_to_vary_reports_no_stderr() {
 #[test]
 fn nfev_includes_the_final_jacobian_probes() {
     let (x, y) = data(101, 0.0, 5.0, 5.0, 2.0);
-    let result = start().fit(&y, &x).expect("fit ran");
+    let result = start().fit((&y, &x)).expect("fit ran");
     assert_eq!(result.nfev, 33, "33 = 30(求解器)+ 3(后置探测)");
 }

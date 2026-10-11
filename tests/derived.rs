@@ -78,7 +78,7 @@ fn a_derived_parameter_equals_its_formula() {
         intercept: 1.0,
         ..Line::default()
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("拟合");
 
     assert!((r.model.sum - (r.model.slope + r.model.intercept)).abs() < 1e-12);
@@ -94,14 +94,14 @@ fn adding_a_derived_parameter_does_not_move_the_fit() {
         slope: 1.0,
         intercept: 1.0,
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("拟合");
     let derived = Line {
         slope: 1.0,
         intercept: 1.0,
         ..Line::default()
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("拟合");
 
     assert_eq!(plain.nvarys, derived.nvarys);
@@ -124,7 +124,7 @@ fn a_derived_parameter_is_not_varied() {
         intercept: 1.0,
         ..Line::default()
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("拟合");
 
     let p = r.params.get("sum").expect("派生参数在参数表内");
@@ -186,7 +186,7 @@ fn derived_fields_chain_in_declaration_order() {
         a: 1.0,
         ..Chained::default()
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("拟合");
 
     assert!((r.model.a - 3.0).abs() < 1e-9);
@@ -203,7 +203,7 @@ fn derived_stderr_matches_the_delta_method() {
         intercept: 1.0,
         ..Line::default()
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("拟合");
     let c = r.covar.as_ref().expect("协方差可得");
 
@@ -260,7 +260,7 @@ fn a_fixed_parameter_feeds_the_formula_without_adding_variance() {
         known: 2.0,
         ..FixedFeed::default()
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("拟合");
 
     assert_eq!(r.model.scaled, r.model.known / r.model.slope);
@@ -317,7 +317,7 @@ fn complex_models_propagate_derived_stderr() {
         offset: 1.0,
         ..ComplexLine::default()
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("拟合");
 
     assert!((r.model.span - (r.model.slope - r.model.offset)).abs() < 1e-12);
@@ -365,7 +365,7 @@ impl Curve for AllFixed {
 fn without_a_covariance_derived_stderr_stays_none() {
     let x: Vec<f64> = (0..5).map(|i| i as f64).collect();
     let y: Vec<f64> = x.iter().map(|&t| 4.0 * t).collect();
-    let r = AllFixed::default().fit(&y, &x).expect("拟合");
+    let r = AllFixed::default().fit((&y, &x)).expect("拟合");
 
     assert!(r.success);
     assert_eq!(r.covar, None);
@@ -398,7 +398,7 @@ fn a_model_made_only_of_derived_fields_compiles() {
     let x: Vec<f64> = (0..5).map(|i| i as f64).collect();
     let y: Vec<f64> = x.iter().map(|_| 2.0).collect();
 
-    let r = AllDerived::default().fit(&y, &x).expect("拟合");
+    let r = AllDerived::default().fit((&y, &x)).expect("拟合");
     assert_eq!(r.model.only, 2.0);
     assert_eq!(r.nvarys, 0);
 }
@@ -416,7 +416,7 @@ fn a_fit_with_nothing_to_vary_reports_fresh_derived_values() {
     };
     assert_eq!(stale.twice, 4.0, "构造出来的缓存本就该是旧的");
 
-    let r = stale.fit(&y, &x).expect("拟合");
+    let r = stale.fit((&y, &x)).expect("拟合");
     assert_eq!(r.model.twice, 10.0);
     assert_eq!(r.params.get("twice").expect("在表内").value, 10.0);
 }
@@ -456,7 +456,7 @@ fn a_non_finite_derived_value_yields_a_nan_stderr() {
         a: 2.0,
         ..OutOfOrder::default()
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("拟合");
 
     assert!(r.model.early.is_nan(), "逆序引用本就该得 NaN");
@@ -492,7 +492,7 @@ fn weighted_complex_fits_propagate_derived_stderr() {
         offset: 1.0,
         ..ComplexLine::default()
     }
-    .fit_sigma(&y, &x, &sigma)
+    .fit((&y, &x, &sigma))
     .expect("拟合");
 
     let c = r.covar.as_ref().expect("协方差可得");
@@ -543,7 +543,7 @@ mod without_trait_in_scope {
     fn a_derived_model_needs_no_trait_import() {
         let x: Vec<f64> = (0..5).map(|i| i as f64).collect();
         let y: Vec<f64> = x.iter().map(|&t| 3.0 * t).collect();
-        let r = Pick::default().fit(&y, &x).expect("拟合");
+        let r = Pick::default().fit((&y, &x)).expect("拟合");
         assert!((r.model.a - 3.0).abs() < 1e-9);
         assert_eq!(r.model.twice, 2.0 * r.model.a);
     }
@@ -558,7 +558,7 @@ fn the_report_marks_derived_parameters() {
         intercept: 1.0,
         ..Line::default()
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("拟合");
     let report = r.to_string();
 
@@ -580,7 +580,7 @@ fn the_three_parameter_kinds_are_marked_distinctly() {
         known: 2.0,
         ..FixedFeed::default()
     }
-    .fit(&y, &x)
+    .fit((&y, &x))
     .expect("拟合");
     let report = r.to_string();
 
